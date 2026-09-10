@@ -366,6 +366,10 @@ jobs:
       - name: Smoke the packed bundle
         run: |
           set -euo pipefail
+          # The job exports PNPM_CONFIG_STORE_DIR for the build, and the launcher
+          # honours an externally set store. A real bundle runs without it, so
+          # clear it before exercising the launcher's own defaults.
+          unset PNPM_CONFIG_STORE_DIR
           root="$(mktemp -d)"
           tar -C "$root" -xzf "${{ steps.pack.outputs.tarball }}"
           bundle="$root/${{ steps.bundle.outputs.name }}"
@@ -375,10 +379,24 @@ jobs:
           # out of the bundled closure, and the profile directory it initializes
           # proves the launcher pointed DSH_HOME at data/dsh-home.
           "$bundle/dsh" --profile headless --dump-default-config >/dev/null
-          test -f "$bundle/data/dsh-home/profiles/headless/package.json"
-          test -d "$bundle/data/pnpm-store"
-          test -f "$bundle/app/node_modules/@deepseek-ai/cordis/package.json"
-          env PATH="$bundle/runtime/bin:$PATH" "$bundle/runtime/bin/pnpm" --version
+          echo "--- bundle state after the dump ---"
+          find "$bundle/data" -maxdepth 4 | head -30
+          test -f "$bundle/data/dsh-home/profiles/headless/package.json" || {
+            echo "::error::DSH_HOME did not receive the headless profile"
+            exit 1
+          }
+          test -d "$bundle/data/pnpm-store" || {
+            echo "::error::the launcher did not create data/pnpm-store"
+            exit 1
+          }
+          test -f "$bundle/app/node_modules/@deepseek-ai/cordis/package.json" || {
+            echo "::error::cordis is missing from the bundled closure"
+            exit 1
+          }
+          env PATH="$bundle/runtime/bin:$PATH" "$bundle/runtime/bin/pnpm" --version || {
+            echo "::error::the bundled pnpm failed"
+            exit 1
+          }
 
           # A dump never imports a plugin, so it cannot see a package the
           # closure omits. Booting resolves every module for real; without a
