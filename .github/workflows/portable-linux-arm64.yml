@@ -124,10 +124,11 @@ jobs:
             exit 1
           }
 
-      # One invocation produces both artifacts: dist-exe/ holds the pkg single
-      # file executable, and the deploy staging directory holds the plain-Node
-      # closure the portable bundle packages.
-      - name: Build the dsh closure and single-file executable
+      # The builder produces the pkg single file executable as well, and its
+      # pack stage is what places the manylinux node-pty addon in the deploy
+      # staging directory, so the whole pipeline runs and only the closure is
+      # packaged here.
+      - name: Build the dsh runtime closure
         run: pnpm exec tsx scripts/build-exe-for-python-sdk.ts --targets=node24-linux-arm64
 
       - name: Assemble the portable bundle
@@ -253,15 +254,6 @@ jobs:
           path: |
             dist-portable/*.tar.gz
             dist-portable/*.sha256
-          if-no-files-found: error
-          retention-days: 14
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dsh-single-file-linux-arm64
-          path: |
-            dist-exe/deepseek-harness-sdk-runtime-linux-arm64
-            dist-exe/deepseek-harness-sdk-runtime-linux-arm64-rg
           if-no-files-found: error
           retention-days: 14
 
