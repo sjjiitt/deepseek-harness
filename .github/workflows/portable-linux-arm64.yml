@@ -92,17 +92,24 @@ jobs:
         run: |
           set -euo pipefail
           addon_dir="$(realpath packages/subprocess/subprocess-local/node_modules/node-pty)"
-          pnpm_setup_root="$(realpath "$(dirname "$(dirname "$PNPM_HOME")")")"
           (cd "$addon_dir" && npm_config_build_from_source=true pnpm run install)
           [ -f "$addon_dir/build/Makefile" ] || {
             echo "::error::node-pty install did not generate $addon_dir/build/Makefile"
             exit 1
           }
+          # The generated Makefile reaches the Node headers by a relative path
+          # that resolves to the gyp devdir on the host, so the container needs
+          # that exact host path mounted read-only; node-gyp itself runs on the
+          # host, and the Makefile no longer invokes it.
+          devdir="${{ runner.temp }}/node-gyp"
+          [ -d "$devdir" ] || {
+            echo "::error::gyp devdir $devdir is missing; the Makefile cannot reach its Node headers"
+            exit 1
+          }
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$PWD:$PWD" \
-            -v "$HOME/.cache/node-gyp:$HOME/.cache/node-gyp:ro" \
-            -v "$pnpm_setup_root:$pnpm_setup_root:ro" \
+            -v "$devdir:$devdir:ro" \
             -w "$addon_dir" \
             quay.io/pypa/manylinux_2_28_aarch64 \
             bash -euxo pipefail -c \
@@ -139,7 +146,13 @@ jobs:
             "$staging/node_modules/@deepseek-ai/dsh-headless/package.json" \
             "$staging/node_modules/node-pty/build/Release/pty.node" \
             "$staging/node_modules/@vscode/ripgrep-linux-arm64/bin/rg"; do
-            [ -e "$required" ] || { echo "::error::deployed closure is missing $required"; exit 1; }
+            [ -e "$required" ] || {
+              echo "::error::deployed closure is missing $required"
+              echo "::group::deployed @deepseek-ai packages"
+              ls "$staging/node_modules/@deepseek-ai" 2>/dev/null || true
+              echo "::endgroup::"
+              exit 1
+            }
           done
 
           mkdir -p "$bundle/app" "$bundle/runtime"
