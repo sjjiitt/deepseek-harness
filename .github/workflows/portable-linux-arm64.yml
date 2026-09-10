@@ -131,6 +131,97 @@ jobs:
       - name: Build the dsh runtime closure
         run: pnpm exec tsx scripts/build-exe-for-python-sdk.ts --targets=node24-linux-arm64
 
+      # pnpm deploys with auto-install-peers=false and the closure manifest is
+      # hand-maintained, so a package whose only carrier is a peer reference
+      # never lands in the payload: the Cordis loader then fails to resolve it
+      # by bare specifier. Restore every missing non-optional peer from the
+      # workspace and walk outward until the graph closes.
+      - name: Close the deployed dependency graph
+        run: |
+          node --input-type=module - "$PWD/python/sdk-runtime/src/deepseek_harness_runtime/runtime/node" <<'NODE'
+          import { cpSync, existsSync, globSync, readFileSync, readdirSync } from 'node:fs'
+          import { join, relative, resolve, sep } from 'node:path'
+
+          const staging = resolve(process.argv[2])
+          const modules = join(staging, 'node_modules')
+          const repoModules = resolve('node_modules')
+
+          // Workspace package name to its source directory, for peers that the
+          // repository install does not link because nothing depends on them.
+          const workspaceDirs = new Map()
+          const patterns = [
+            'packages/*/*/package.json', 'apps/*/package.json',
+            'native/system/package.json', 'native/system/packages/*/package.json',
+            'vendor/*/package.json',
+          ]
+          for (const pattern of patterns) {
+            for (const file of globSync(pattern)) {
+              const manifest = JSON.parse(readFileSync(file, 'utf8'))
+              if (typeof manifest.name === 'string' && !workspaceDirs.has(manifest.name)) {
+                workspaceDirs.set(manifest.name, resolve(file, '..'))
+              }
+            }
+          }
+
+          function installedNames() {
+            const names = []
+            for (const entry of readdirSync(modules, { withFileTypes: true })) {
+              if (entry.name.startsWith('.')) continue
+              if (!entry.name.startsWith('@')) { names.push(entry.name); continue }
+              for (const scoped of readdirSync(join(modules, entry.name), { withFileTypes: true })) {
+                names.push(`${entry.name}/${scoped.name}`)
+              }
+            }
+            return names
+          }
+
+          function localSource(name) {
+            const repo = join(repoModules, name)
+            if (existsSync(join(repo, 'package.json'))) return repo
+            const workspace = workspaceDirs.get(name)
+            if (workspace !== undefined && existsSync(join(workspace, 'package.json'))) return workspace
+            return undefined
+          }
+
+          const restored = []
+          const queue = installedNames()
+          const seen = new Set()
+          while (queue.length > 0) {
+            const name = queue.pop()
+            if (seen.has(name)) continue
+            seen.add(name)
+            const directory = join(modules, name)
+            if (!existsSync(join(directory, 'package.json'))) continue
+            const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+            const meta = manifest.peerDependenciesMeta ?? {}
+            for (const peer of Object.keys(manifest.peerDependencies ?? {})) {
+              if (meta[peer]?.optional === true) continue
+              if (existsSync(join(modules, peer))) { queue.push(peer); continue }
+              const source = localSource(peer)
+              if (source === undefined) {
+                console.error(`::error::${name} needs peer ${peer}, absent from the closure and with no workspace source`)
+                process.exit(1)
+              }
+              cpSync(source, join(modules, peer), {
+                recursive: true,
+                dereference: true,
+                filter: (path) => {
+                  const nested = relative(source, path)
+                  return nested === '' || !nested.split(sep).includes('node_modules')
+                },
+              })
+              restored.push(`${peer} (needed by ${name})`)
+              queue.push(peer)
+            }
+          }
+
+          if (restored.length === 0) console.log('runtime closure: every non-optional peer is installed')
+          else {
+            console.log(`runtime closure: restored ${restored.length} missing peer(s)`)
+            for (const line of restored) console.log(`  + ${line}`)
+          }
+          NODE
+
       - name: Assemble the portable bundle
         id: bundle
         run: |
@@ -145,6 +236,9 @@ jobs:
             "$staging/node_modules/@deepseek-ai/dsh-base/package.json" \
             "$staging/node_modules/@deepseek-ai/dsh-web-app/package.json" \
             "$staging/node_modules/@deepseek-ai/dsh-headless/package.json" \
+            "$staging/node_modules/@deepseek-ai/dsh-session-title-llm/package.json" \
+            "$staging/node_modules/@deepseek-ai/dsh-util-workspace-path/package.json" \
+            "$staging/node_modules/@deepseek-ai/node-addon-system-linux-arm64/bin/landlock-run" \
             "$staging/node_modules/node-pty/build/Release/pty.node" \
             "$staging/node_modules/@vscode/ripgrep-linux-arm64/bin/rg"; do
             [ -e "$required" ] || {
@@ -239,14 +333,26 @@ jobs:
           bundle="$root/${{ steps.bundle.outputs.name }}"
 
           "$bundle/dsh" --version
-          # A config dump is boot-free and credential-free: it resolves every
-          # bundle layer and patch out of the bundled closure, then exits. The
-          # profile directory it initializes is what proves the launcher pointed
-          # DSH_HOME at the unpacked directory.
+          # A config dump is boot-free: it resolves every bundle layer and patch
+          # out of the bundled closure, and the profile directory it initializes
+          # proves the launcher pointed DSH_HOME at the unpacked directory.
           "$bundle/dsh" --profile headless --dump-default-config >/dev/null
           test -f "$bundle/profiles/headless/package.json"
           test -f "$bundle/app/node_modules/@deepseek-ai/cordis/package.json"
           env PATH="$bundle/runtime/bin:$PATH" "$bundle/runtime/bin/pnpm" --version
+
+          # A dump never imports a plugin, so it cannot see a package the
+          # closure omits. Booting resolves every module for real; without a
+          # credential the run is expected to stop on the missing key, and only
+          # a module-resolution failure is a packaging defect.
+          set +e
+          boot="$(timeout 180 "$bundle/dsh" --profile headless "packaging smoke" 2>&1)"
+          set -e
+          printf '%s\n' "$boot" | head -30
+          if printf '%s\n' "$boot" | grep -qE 'ERR_MODULE_NOT_FOUND|Cannot find (package|module)'; then
+            echo "::error::booting the headless profile failed to resolve a module"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
