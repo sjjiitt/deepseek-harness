@@ -1,0 +1,272 @@
+# Build a self-contained Linux arm64 portable bundle of the dsh CLI.
+#
+# The bundle carries its own Node runtime and the production dependency
+# closure of `dsh-python-runtime-closure` — the same deploy root the Python
+# SDK runtime wheel uses — behind a `dsh` launcher that points `DSH_HOME` at
+# the unpacked directory. Nothing is installed on the host and no credential
+# is needed: the build never reaches a model API.
+#
+# Run it from Actions → "Portable Linux arm64" → Run workflow.
+name: Portable Linux arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Attach the built tarball to a GitHub Release.
+        type: boolean
+        default: false
+      manylinux_pty:
+        description: Rebuild node-pty in manylinux_2_28 so the bundle runs on glibc 2.28+ hosts.
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  # CI runs must never report to the production telemetry endpoint baked
+  # into apps/cli/cordis.yml.
+  DSH_TELEMETRY_DISABLED: '1'
+  DSH_BUILD_CLIENT_PROFILE: official
+  PRIMARY_NODE_VERSION: '24'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: linux-arm64 portable bundle
+    # The deploy closure and the node-pty addon are architecture-specific, and
+    # scripts/build-exe-for-python-sdk.ts requires the target to match its host.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Configure runner-private caches
+        run: |
+          echo "NODE_COMPILE_CACHE=${{ runner.temp }}/node-compile-cache" >> "$GITHUB_ENV"
+          echo "npm_config_devdir=${{ runner.temp }}/node-gyp" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Configure pnpm store path
+        id: pnpm-store
+        run: |
+          store_root="$HOME/.local/share/pnpm/store"
+          echo "PNPM_CONFIG_STORE_DIR=$store_root" >> "$GITHUB_ENV"
+          echo "path=$(PNPM_CONFIG_STORE_DIR="$store_root" pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: linux-arm64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            linux-arm64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Install (immutable)
+        # node-gyp fetches Node headers from nodejs.org during install, and that
+        # endpoint stalls intermittently; bounded retries mirror the platform lane.
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then exit 0; fi
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
+
+      - name: Rebuild node-pty against manylinux 2.28
+        if: inputs.manylinux_pty
+        run: |
+          set -euo pipefail
+          addon_dir="$(realpath packages/subprocess/subprocess-local/node_modules/node-pty)"
+          pnpm_setup_root="$(realpath "$(dirname "$(dirname "$PNPM_HOME")")")"
+          (cd "$addon_dir" && npm_config_build_from_source=true pnpm run install)
+          [ -f "$addon_dir/build/Makefile" ] || {
+            echo "::error::node-pty install did not generate $addon_dir/build/Makefile"
+            exit 1
+          }
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:$PWD" \
+            -v "$HOME/.cache/node-gyp:$HOME/.cache/node-gyp:ro" \
+            -v "$pnpm_setup_root:$pnpm_setup_root:ro" \
+            -w "$addon_dir" \
+            quay.io/pypa/manylinux_2_28_aarch64 \
+            bash -euxo pipefail -c \
+              'rm -rf build/Release && make -C build -j2 BUILDTYPE=Release'
+          addon="$addon_dir/build/Release/pty.node"
+          [ -f "$addon" ] || { echo "::error::$addon missing after the manylinux rebuild"; exit 1; }
+          readelf --version-info "$addon" | tee node-pty-glibc-versions.txt
+          maximum="$(sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' node-pty-glibc-versions.txt | sort -V | tail -1)"
+          [ -n "$maximum" ] || { echo "::error::no GLIBC requirements found in $addon"; exit 1; }
+          dpkg --compare-versions "$maximum" le 2.28 || {
+            echo "::error::node-pty requires GLIBC_$maximum; the bundle claims glibc 2.28"
+            exit 1
+          }
+
+      # One invocation produces both artifacts: dist-exe/ holds the pkg single
+      # file executable, and the deploy staging directory holds the plain-Node
+      # closure the portable bundle packages.
+      - name: Build the dsh closure and single-file executable
+        run: pnpm exec tsx scripts/build-exe-for-python-sdk.ts --targets=node24-linux-arm64
+
+      - name: Assemble the portable bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/cli/package.json').version")"
+          name="dsh-portable-linux-arm64-$version"
+          staging="python/sdk-runtime/src/deepseek_harness_runtime/runtime/node"
+          bundle="$PWD/dist-portable/$name"
+
+          for required in \
+            "$staging/node_modules/@deepseek-ai/dsh/lib/bin.js" \
+            "$staging/node_modules/@deepseek-ai/dsh-base/package.json" \
+            "$staging/node_modules/@deepseek-ai/dsh-web-app/package.json" \
+            "$staging/node_modules/@deepseek-ai/dsh-headless/package.json" \
+            "$staging/node_modules/node-pty/build/Release/pty.node" \
+            "$staging/node_modules/@vscode/ripgrep-linux-arm64/bin/rg"; do
+            [ -e "$required" ] || { echo "::error::deployed closure is missing $required"; exit 1; }
+          done
+
+          mkdir -p "$bundle/app" "$bundle/runtime"
+          cp -a "$staging/." "$bundle/app/"
+
+          # The published Node distribution carries node, npm, and npx.
+          node_root="$(cd -- "$(dirname -- "$(command -v node)")/.." && pwd -P)"
+          [ -x "$node_root/bin/node" ] || { echo "::error::no Node distribution at $node_root"; exit 1; }
+          cp -a "$node_root/." "$bundle/runtime/"
+
+          # `dsh plugin` forwards to pnpm on PATH, so the bundle carries its own.
+          pnpm_version="$(node -p "require('./package.json').packageManager.split('@').pop()")"
+          PATH="$bundle/runtime/bin:$PATH" \
+            "$bundle/runtime/bin/npm" install --global --prefix "$bundle/runtime" "pnpm@$pnpm_version" >/dev/null
+
+          cat > "$bundle/dsh" <<'LAUNCHER'
+          #!/bin/sh
+          # DeepSeek Harness portable launcher (Linux arm64).
+          #
+          # Everything the harness persists (profiles, sessions, credentials,
+          # settings, attachments) stays inside this directory: DSH_HOME
+          # defaults to the directory holding this script. Export DSH_HOME
+          # before invoking to keep that state somewhere else.
+          set -eu
+
+          case $0 in
+            */*) target=$0 ;;
+            *) target=$(command -v -- "$0") ;;
+          esac
+          target=$(readlink -f -- "$target")
+          here=$(CDPATH= cd -- "$(dirname -- "$target")" && pwd -P)
+
+          : "${DSH_HOME:=$here}"
+          export DSH_HOME
+          export PATH="$here/runtime/bin:$PATH"
+
+          exec "$here/runtime/bin/node" "$here/app/node_modules/@deepseek-ai/dsh/lib/bin.js" "$@"
+          LAUNCHER
+          chmod 0755 "$bundle/dsh"
+
+          cat > "$bundle/README.md" <<'README'
+          # DeepSeek Harness portable bundle (Linux arm64)
+
+          Unpack anywhere and run `./dsh`:
+
+          ```sh
+          tar -xzf dsh-portable-linux-arm64-<version>.tar.gz
+          cd dsh-portable-linux-arm64-<version>
+          export DEEPSEEK_API_KEY=...        # or write DEEPSEEK_API_KEY=... to ./.env
+          ./dsh web --no-open                # Web UI on http://127.0.0.1:3080
+          ./dsh --profile headless "run the tests"   # one task, then exit
+          ```
+
+          `DSH_HOME` defaults to this directory, so profiles, sessions,
+          credentials, settings, and attachments stay beside the bundle. Export
+          `DSH_HOME` first to keep them elsewhere. `runtime/bin` holds the
+          bundled Node, npm, and pnpm, and is prepended to `PATH` by `./dsh`, so
+          `./dsh plugin --profile web add <package>` installs plugins into this
+          bundle.
+
+          Requirements: Linux arm64 with glibc 2.28 or newer.
+          README
+
+          printf 'name=%s\npath=%s\n' "$name" "$bundle" >> "$GITHUB_OUTPUT"
+          du -sh "$bundle"
+
+      - name: Pack the tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          bundle="${{ steps.bundle.outputs.path }}"
+          name="${{ steps.bundle.outputs.name }}"
+          tar -C "$(dirname -- "$bundle")" -czf "$PWD/dist-portable/$name.tar.gz" "$name"
+          (cd dist-portable && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          ls -l dist-portable
+          echo "tarball=$PWD/dist-portable/$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke the packed bundle
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          tar -C "$root" -xzf "${{ steps.pack.outputs.tarball }}"
+          bundle="$root/${{ steps.bundle.outputs.name }}"
+
+          "$bundle/dsh" --version
+          # A config dump is boot-free and credential-free: it resolves every
+          # bundle layer and patch out of the bundled closure, then exits. The
+          # profile directory it initializes is what proves the launcher pointed
+          # DSH_HOME at the unpacked directory.
+          "$bundle/dsh" --profile headless --dump-default-config >/dev/null
+          test -f "$bundle/profiles/headless/package.json"
+          test -f "$bundle/app/node_modules/@deepseek-ai/cordis/package.json"
+          env PATH="$bundle/runtime/bin:$PATH" "$bundle/runtime/bin/pnpm" --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: |
+            dist-portable/*.tar.gz
+            dist-portable/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dsh-single-file-linux-arm64
+          path: |
+            dist-exe/deepseek-harness-sdk-runtime-linux-arm64
+            dist-exe/deepseek-harness-sdk-runtime-linux-arm64-rg
+          if-no-files-found: error
+          retention-days: 14
+
+      # Fork Actions run with the invoking token; `gh` is preinstalled on the
+      # hosted image, and the job-level `contents: write` grant is what lets the
+      # release upload land.
+      - name: Publish the GitHub Release
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/cli/package.json').version")"
+          tag="portable-linux-arm64-v$version"
+          notes="Self-contained Linux arm64 portable bundle of dsh. Unpack and run ./dsh; DSH_HOME defaults to the unpacked directory."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" --title "$tag" --notes "$notes"
+          fi
+          gh release upload "$tag" dist-portable/*.tar.gz dist-portable/*.sha256 --clobber
