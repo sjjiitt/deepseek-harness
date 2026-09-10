@@ -124,6 +124,26 @@ jobs:
             exit 1
           }
 
+      # Landlock is a static musl launcher, and the repository build passes
+      # --host-addon-only, which skips every non-Node-API binary. A Linux host
+      # without bubblewrap then fails the sandbox probe closed, so build the
+      # launcher here with the toolchain the native release lane also installs.
+      - name: Build the static Landlock launcher and libc flock addons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -yq musl-tools
+          pnpm --dir native/system run build:native
+
+          platform="native/system/packages/linux-arm64"
+          test -x "$platform/bin/landlock-run"
+          test -f "$platform/bin/glibc/system.node"
+          test -f "$platform/bin/musl/system.node"
+          # The glibc addon binds the runner's libc; report its floor so a host
+          # older than the runner is diagnosable from the build log alone.
+          readelf --version-info "$platform/bin/glibc/system.node" \
+            | sed -n 's/.*Name: \(GLIBC[A-Z_0-9.]*\).*/\1/p' | sort -Vu | tail -1
+
       # The builder produces the pkg single file executable as well, and its
       # pack stage is what places the manylinux node-pty addon in the deploy
       # staging directory, so the whole pipeline runs and only the closure is
