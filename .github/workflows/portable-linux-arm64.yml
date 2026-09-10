@@ -250,7 +250,7 @@ jobs:
             }
           done
 
-          mkdir -p "$bundle/app" "$bundle/runtime"
+          mkdir -p "$bundle/app" "$bundle/runtime" "$bundle/data"
           cp -a "$staging/." "$bundle/app/"
 
           # The published Node distribution carries node, npm, and npx.
@@ -267,10 +267,9 @@ jobs:
           #!/bin/sh
           # DeepSeek Harness portable launcher (Linux arm64).
           #
-          # Everything the harness persists (profiles, sessions, credentials,
-          # settings, attachments) stays inside this directory: DSH_HOME
-          # defaults to the directory holding this script. Export DSH_HOME
-          # before invoking to keep that state somewhere else.
+          # Every mutable artifact stays inside this bundle: DSH_HOME defaults to
+          # data/dsh-home and pnpm's store to data/pnpm-store. Export either
+          # variable before invoking to keep that state somewhere else.
           set -eu
 
           case $0 in
@@ -280,8 +279,11 @@ jobs:
           target=$(readlink -f -- "$target")
           here=$(CDPATH= cd -- "$(dirname -- "$target")" && pwd -P)
 
-          : "${DSH_HOME:=$here}"
-          export DSH_HOME
+          data="$here/data"
+          : "${DSH_HOME:=$data/dsh-home}"
+          : "${PNPM_CONFIG_STORE_DIR:=$data/pnpm-store}"
+          export DSH_HOME PNPM_CONFIG_STORE_DIR
+          mkdir -p "$DSH_HOME" "$PNPM_CONFIG_STORE_DIR"
           export PATH="$here/runtime/bin:$PATH"
 
           exec "$here/runtime/bin/node" "$here/app/node_modules/@deepseek-ai/dsh/lib/bin.js" "$@"
@@ -296,20 +298,36 @@ jobs:
           ```sh
           tar -xzf dsh-portable-linux-arm64-<version>.tar.gz
           cd dsh-portable-linux-arm64-<version>
-          export DEEPSEEK_API_KEY=...        # or write DEEPSEEK_API_KEY=... to ./.env
-          ./dsh web --no-open                # Web UI on http://127.0.0.1:3080
+          export DEEPSEEK_API_KEY=...    # or write it to ./data/dsh-home/.env
+          ./dsh web --no-open            # Web UI on http://127.0.0.1:3080
           ./dsh --profile headless "run the tests"   # one task, then exit
           ```
 
-          `DSH_HOME` defaults to this directory, so profiles, sessions,
-          credentials, settings, and attachments stay beside the bundle. Export
-          `DSH_HOME` first to keep them elsewhere. `runtime/bin` holds the
-          bundled Node, npm, and pnpm, and is prepended to `PATH` by `./dsh`, so
-          `./dsh plugin --profile web add <package>` installs plugins into this
-          bundle.
+          `DSH_HOME` defaults to `data/dsh-home`, so profiles, sessions,
+          credentials, settings, and attachments stay under `data/` beside the
+          bundle; pnpm's store defaults to `data/pnpm-store`. Export `DSH_HOME`
+          (or `PNPM_CONFIG_STORE_DIR`) first to keep that state elsewhere.
+
+          `runtime/bin` holds the bundled Node, npm, and pnpm, and is prepended
+          to `PATH` by `./dsh`, so `./dsh plugin --profile web add <package>`
+          installs plugins into this bundle.
+
+          Move or back up the bundle by copying it whole, `data/` included.
 
           Requirements: Linux arm64 with glibc 2.28 or newer.
           README
+
+          cat > "$bundle/data/README.md" <<'DATA'
+          # Bundle state
+
+          Everything dsh writes at runtime lives here. `dsh-home/` is the Harness
+          home (`DSH_HOME`): profiles, sessions, credentials, settings, and
+          attachments. `pnpm-store/` caches the packages `dsh plugin` installs.
+
+          The launcher creates both on first run, and honours an externally set
+          `DSH_HOME` or `PNPM_CONFIG_STORE_DIR` instead. Copy this directory to
+          back up or migrate the bundle's state.
+          DATA
 
           printf 'name=%s\npath=%s\n' "$name" "$bundle" >> "$GITHUB_OUTPUT"
           du -sh "$bundle"
@@ -335,9 +353,10 @@ jobs:
           "$bundle/dsh" --version
           # A config dump is boot-free: it resolves every bundle layer and patch
           # out of the bundled closure, and the profile directory it initializes
-          # proves the launcher pointed DSH_HOME at the unpacked directory.
+          # proves the launcher pointed DSH_HOME at data/dsh-home.
           "$bundle/dsh" --profile headless --dump-default-config >/dev/null
-          test -f "$bundle/profiles/headless/package.json"
+          test -f "$bundle/data/dsh-home/profiles/headless/package.json"
+          test -d "$bundle/data/pnpm-store"
           test -f "$bundle/app/node_modules/@deepseek-ai/cordis/package.json"
           env PATH="$bundle/runtime/bin:$PATH" "$bundle/runtime/bin/pnpm" --version
 
@@ -374,7 +393,7 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./apps/cli/package.json').version")"
           tag="portable-linux-arm64-v$version"
-          notes="Self-contained Linux arm64 portable bundle of dsh. Unpack and run ./dsh; DSH_HOME defaults to the unpacked directory."
+          notes="Self-contained Linux arm64 portable bundle of dsh. Unpack and run ./dsh; DSH_HOME defaults to data/dsh-home and all state stays under data/."
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release edit "$tag" --notes "$notes"
           else
