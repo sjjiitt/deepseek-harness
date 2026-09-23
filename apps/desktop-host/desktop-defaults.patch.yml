@@ -1,0 +1,10 @@
+# Desktop gateway timing.
+#
+# The Desktop Host and its renderer run on one loopback machine, so a missed WebSocket Pong is not
+# evidence that the peer is gone: a busy renderer can delay it past the two-second default, the Host
+# then terminates a healthy socket, and the Client reconnects in a loop while aborting in-flight
+# work. The Ping cadence stays, but its deadline is effectively unbounded; a real close is still
+# observed immediately on loopback.
+- id: typert-gateway
+  config:
+    websocketHeartbeatIntervalMs: 3600000

@@ -267,6 +267,11 @@
 
     - id: office-to-pdf
       name: '@deepseek-ai/dsh-office-to-pdf'
+      config:
+        # The arm64 WebAssembly engine converts large documents well past the one-minute default, and
+        # an interactive preview is cancellable, so a longer deadline trades latency for success.
+        timeoutMs: 180000
+        maxInputBytes: 104857600
 
     # The right Sidebar's document tab: bounded file reads with selectable
     # Markdown, code, HTML, PDF, Office, and plain-text renderers.
