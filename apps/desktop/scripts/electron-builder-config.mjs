@@ -1,8 +1,8 @@
 import { officePackageDirectories } from '../../../scripts/libreoffice-packages.mjs'
 import { X509Certificate } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { join, relative, sep } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -34,6 +34,10 @@ import {
   writeMacOSAppUpdateConfig,
 } from './macos-app-update-config.mjs'
 
+// Desktop resolves two interface locales, so the packaged Electron distribution carries only those
+// Chromium locale resources instead of the fifty-five an unmodified distribution ships.
+const DESKTOP_ELECTRON_LANGUAGES = ['en-US', 'zh-CN']
+
 /**
  * Create electron-builder configuration from one release environment.
  * @param {NodeJS.ProcessEnv} env - Packaging environment.
@@ -51,7 +55,6 @@ export function createElectronBuilderConfig(
   preparedRuntimeVersion = undefined,
 ) {
   const appId = resolveDesktopAppId(env)
-  const policy = resolveDesktopPolicyEnvironment(env)
   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
   const resolvedPlatform = targetPlatform ?? hostPlatform
   const resolvedArch = env.DSH_DESKTOP_TARGET_ARCH ?? hostArch
@@ -60,9 +63,20 @@ export function createElectronBuilderConfig(
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
   if (unsigned && resolvedPlatform !== 'win32') throw new Error('desktop package: unsigned builds require Windows')
+  if (env.DSH_DESKTOP_PORTABLE !== undefined && !['0', '1'].includes(env.DSH_DESKTOP_PORTABLE)) {
+    throw new Error('desktop package: DSH_DESKTOP_PORTABLE must be 0 or 1')
+  }
+  // A portable build ships an unpacked directory with no update feed and no mandatory policy, so it
+  // needs neither the updater origin nor the policy service and its packaged application never queries either.
+  const portable = env.DSH_DESKTOP_PORTABLE === '1'
+  if (portable && resolvedPlatform !== 'linux') throw new Error('desktop package: portable builds require Linux')
+  const policy = portable ? undefined : resolveDesktopPolicyEnvironment(env)
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
+  // Windows cannot supply the Visual C++ runtime that Office preview and the native modules load, so a
+  // packaging environment may name Microsoft's official redistributable for the installer to offer.
+  const vcRedist = resolveWindowsVcRedist(env, packagesWindows)
   const macOSSigning = packagesMacOS ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS) resolveMacOSNotarizationEnvironment(env)
   const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
@@ -90,7 +104,8 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  const update = portable || unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  const compression = resolveDesktopCompression(env)
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
@@ -102,7 +117,7 @@ export function createElectronBuilderConfig(
     protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
-      dshMandatoryUpdatePolicy: policy,
+      ...policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy },
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
     },
@@ -110,7 +125,11 @@ export function createElectronBuilderConfig(
     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
     artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${unsigned ? '-unsigned' : ''}.\${ext}`,
     directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
-    asar: true,
+    // A portable Linux bundle stays an ordinary directory: the LibreOffice kit
+    // probes for an unpublished native Linux engine with lstatSync, and
+    // Electron's asar filesystem answers null (not undefined) for a missing
+    // path, so the WASM fallback never triggers inside app.asar.
+    asar: !portable,
     electronDist: buildPaths.electron,
     electronFuses: { runAsNode: true },
     beforeBuild: async () => {
@@ -143,13 +162,15 @@ export function createElectronBuilderConfig(
     asarUnpack: unpack,
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
-      { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
+      { from: fileURLToPath(new URL(portable ? '../resources/icon.png' : '../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+      ...vcRedist === undefined ? [] : [{ from: vcRedist, to: 'vc_redist.x64.exe' }],
     ],
     mac: {
       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
       category: 'public.app-category.developer-tools',
+      electronLanguages: DESKTOP_ELECTRON_LANGUAGES,
       // macOS matches the application locale against this bundle, not Electron Framework resources.
       extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
       identity: macOSSigning?.signingIdentity,
@@ -221,6 +242,7 @@ export function createElectronBuilderConfig(
     win: {
       icon: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)),
       forceCodeSigning: !unsigned,
+      electronLanguages: DESKTOP_ELECTRON_LANGUAGES,
       signtoolOptions: {
         sign: windowsSigner,
         publisherName: windowsSigner === undefined ? undefined : resolveWindowsUpdatePublisher(env.DSH_DESKTOP_WINDOWS_CER_FILE),
@@ -229,8 +251,11 @@ export function createElectronBuilderConfig(
       target: ['nsis'],
     },
     linux: {
-      category: 'Development',
-      target: ['AppImage'],
+      icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
+      category: 'Utility',
+      electronLanguages: DESKTOP_ELECTRON_LANGUAGES,
+      executableName: 'deepseek-harness',
+      target: ['dir'],
     },
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
@@ -244,6 +269,38 @@ export function createElectronBuilderConfig(
       differentialPackage: true,
     },
     detectUpdateChannel: false,
+    ...compression === undefined ? {} : { compression },
     publish: update === undefined ? null : [{ provider: 'generic', url: update.publicUrl, channel: 'nightly' }],
   }
+}
+
+/**
+ * Resolve the artifact compression a packaging environment selects. An absent value keeps
+ * electron-builder's own default; `store` trades a larger artifact for the fastest packaging.
+ * @param {NodeJS.ProcessEnv} env - Packaging environment.
+ * @returns {'store' | 'normal' | 'maximum' | undefined} Selected compression level.
+ */
+function resolveDesktopCompression(env) {
+  const configured = env.DSH_DESKTOP_COMPRESSION
+  if (configured === undefined) return undefined
+  if (!['store', 'normal', 'maximum'].includes(configured)) {
+    throw new Error(`desktop package: DSH_DESKTOP_COMPRESSION must be store, normal or maximum, received ${configured}`)
+  }
+  return configured
+}
+
+/**
+ * Resolve the Visual C++ redistributable that a Windows installer may offer.
+ * @param {NodeJS.ProcessEnv} env - Packaging environment.
+ * @param {boolean} packagesWindows - Whether this build packages Windows.
+ * @returns {string | undefined} Absolute redistributable path, or undefined when none is configured.
+ */
+function resolveWindowsVcRedist(env, packagesWindows) {
+  const configured = env.DSH_DESKTOP_VC_REDIST
+  if (configured === undefined) return undefined
+  if (!packagesWindows) throw new Error('desktop package: DSH_DESKTOP_VC_REDIST requires a Windows target')
+  if (configured === '' || !isAbsolute(configured) || !existsSync(configured)) {
+    throw new Error(`desktop package: DSH_DESKTOP_VC_REDIST must name an existing redistributable, received ${configured}`)
+  }
+  return configured
 }

@@ -38,7 +38,7 @@ Windows 在整个运行期间常驻托盘图标。悬停提示为产品名，单
 
 ## 关键技术决策
 
-设计师原稿位于 `resources/icon.png` 和 `resources/icon.svg`；平台适配保留鲸鱼与渐变，分别位于 `resources/icon-windows.*` 和 `resources/icon-macos.*`。将各平台 SVG 导出为透明的 1024×1024 PNG。electron-builder 为 Windows 应用、安装程序和卸载程序生成多尺寸 ICO（[Windows 图标要求](https://learn.microsoft.com/en-us/windows/apps/design/iconography/app-icon-construction)）。安装页面在两种主题下使用匹配的图案；卸载程序的欢迎和完成页共用 `installer/assets/uninstaller-sidebar.png`，准备阶段将其转换为 164×314 BMP。
+随包发布的平台图标采用 CSCN 品牌：`resources/icon.png`、`resources/icon-windows.png` 和 `resources/icon-macos.png` 是 `resources/brand-row.png` 中 CSCN 字标的 1024×1024 导出，而 `resources/brand-favicon-64.png` 是其正方形 64×64 版本，供 Linux 窗口管理器与随包桌面启动项使用。DeepSeek 原稿保留为 `resources/icon.svg`、`resources/icon-windows.svg` 和 `resources/icon-macos.svg`。electron-builder 为 Windows 应用、安装程序和卸载程序生成多尺寸 ICO（[Windows 图标要求](https://learn.microsoft.com/en-us/windows/apps/design/iconography/app-icon-construction)）。安装页面在两种主题下使用匹配的图案；卸载程序的欢迎和完成页共用 `installer/assets/uninstaller-sidebar.png`，准备阶段将其转换为 164×314 BMP。
 
 快捷键覆盖保存在 `app.getPath('userData')/keybindings.json`，与 `DSH_HOME` 分离。主进程校验并串行保存修改后才发布已接受键位。读取失败保留上次接受的键位并阻止编辑，包括全部恢复；不可读和未来版本的文件保持不变。开发时可通过 `DSH_DESKTOP_USER_DATA_DIR` 隔离这些偏好，启动器会输出解析后的路径。格式和冲突语义见[快捷键服务](../../packages/client/shortcuts/README.zh.md)。
 
@@ -209,7 +209,19 @@ pnpm run package:desktop:mac:x64
 pnpm run package:desktop:win:x64
 ```
 
-macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS 或带 Rosetta 的 Apple Silicon 上运行。Windows x64 命令要求 Windows x64。Linux 不是受支持的 Desktop 发布目标。
+macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS 或带 Rosetta 的 Apple Silicon 上运行。Windows x64 命令要求 Windows x64。Linux 没有签名发布目标；下方的便携构建改为打包解压目录。
+
+### Linux arm64 便携构建
+
+Linux 没有签名发布目标。`package:linux:arm64:portable` 为 Kylin V10 SP1+ 等 arm64 发行版构建一个自包含的解压目录，并打包为 `deepseek-harness-<version>-linux-arm64.tar.gz`。该包内含 Electron、dsh 运行时以及随包的 Python 与 pnpm 发行版，因此无需安装任何组件、也无需网络即可启动。它不携带更新源与强制更新策略，打包后的应用不会检查更新或访问策略服务。
+
+```sh
+pnpm run package:desktop:linux:arm64:portable
+```
+
+该命令要求 Linux arm64 构建主机，并先用 `pnpm --dir native/system run build:native` 构建原生 `landlock-run` 启动器与两个 flock 插件（需要 musl-gcc）。准备工作复用共享的 Electron、primary-runtime、package-set 与 dsh 步骤，并止于解压后的应用目录；[工作流](../../.github/workflows/desktop-linux-arm64.yml) 在 `ubuntu-24.04-arm` 上运行它，并拒绝 ELF 文件引用了高于所要求下限的 GLIBC 符号的包。该包不引用高于 2.28 的 GLIBC 符号，因此 Kylin V10 SP1 及更新的 arm64 系统均可运行。
+
+将归档解压到任意位置并运行 `./run-deepseek-harness.sh`。运行一次 `./install-desktop-entry.sh` 可添加不弹终端的启动项：它在包旁写入 `deepseek-harness.desktop`，注册到应用菜单，并在桌面放置一份副本。状态保存在 `$DSH_HOME`（默认 `~/.dsh`）。若 Chromium 报告沙箱错误，请以 root 一次性准备 `chrome-sandbox`，或以 `DSH_DESKTOP_NO_SANDBOX=1` 启动。
 
 每个目标都在 `apps/desktop/.desktop-build/targets/<target>/` 下持有自己的打包输入、已准备运行时、包集合、dsh 依赖树、pnpm 准备状态、未打包应用、更新元数据和最终产物。Electron 归档缓存继续由 `.desktop-build/downloads` 共享，因为每个归档文件名都包含版本、平台和架构，并且在解包前经过验证。目标构建绝不读取其他目标的可变准备状态。
 
@@ -217,7 +229,7 @@ macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS �
 
 Desktop 在本地打包工作区包，并通过目标捆绑的 Node 和 pnpm 安装外部依赖。[Desktop 文件策略](scripts/runtime-file-policy.ts)随后在签名和完整性封装前过滤不可变的 `resources/app.asar/dsh/node_modules` 副本。它排除 TypeScript 声明、已识别的 JavaScript/CSS/TypeScript source map、TypeScript 构建缓存、Domino 测试目录、选定的原生编译器输出和其他平台的 node-pty 预构建文件。它保留运行时 JavaScript、原生模块及其 DLL/EXE 辅助文件、WASM、未知资源、许可证和 notices。依赖清单在完整性封装前经过 electron-builder 的元数据清理，确保归档保持已记录的字节。该策略不修改 npm tarball、捆绑的包管理器或用户安装的插件文件。
 
-[Office 转换提供方](../../packages/document/office-to-pdf/README.zh.md)携带目标已声明的原生引擎；kit 未声明匹配原生目标时携带 WASM 引擎。准备阶段在打包前拒绝缺少目标引擎的情况。完整 Office 依赖（CLI、JavaScript 库和选定引擎的可执行文件、数据、许可证及 notices）解包到 `resources/app.asar.unpacked/dsh/node_modules/` 下。Desktop Host 将引擎清单解析到这些物理目录，并向加载的技能提供独立 Node 和解包后 CLI 的绝对路径。Node 位于 `resources/runtime/primary-runtime/dependencies/node/bin/`；CLI 位于解包后的 `@deepseek-ai/libreoffice-kit/lib/cli.js`。macOS 上的原生辅助程序获得 [LibreOffice UNO 桥](https://github.com/LibreOffice/core/blob/master/sysui/desktop/macosx/hardened_runtime.xcent.in)所需的 JIT entitlement。
+[Office 转换提供方](../../packages/document/office-to-pdf/README.zh.md)携带目标已声明的原生引擎；kit 未声明匹配原生目标时携带 WASM 引擎。准备阶段在打包前拒绝缺少目标引擎的情况。完整 Office 依赖（CLI、JavaScript 库和选定引擎的可执行文件、数据、许可证及 notices）解包到 `resources/app.asar.unpacked/dsh/node_modules/` 下。Desktop Host 将引擎清单解析到这些物理目录，并向加载的技能提供独立 Node 和解包后 CLI 的绝对路径。运行时就绪阶段会改写已安装的 `@deepseek-ai/libreoffice-kit` 解析逻辑，使其在解析到的目录位于 `app.asar` 内时改用同一份物理副本，因为原生助手进程读不到归档内的路径。Node 位于 `resources/runtime/primary-runtime/dependencies/node/bin/`；CLI 位于解包后的 `@deepseek-ai/libreoffice-kit/lib/cli.js`。macOS 上的原生辅助程序获得 [LibreOffice UNO 桥](https://github.com/LibreOffice/core/blob/master/sysui/desktop/macosx/hardened_runtime.xcent.in)所需的 JIT entitlement。
 
 打包应用运行编译后的 JavaScript 和预生成的 Typert 元数据，不编译 TypeScript 插件。源码级调试导航和编辑器声明仍可从开发包中获取。[复制规则测试](tests/runtime-file-policy.spec.ts)覆盖排除项和保留资源；[产物 smoke](tests/fixtures/runtime-payload-smoke.mjs) 在 Host smoke 和最终清单验证之前，使用 Electron RunAsNode 执行。产物 smoke 解析搜索工具使用的 ripgrep 可执行文件，并验证文本搜索和文件枚举。Windows 签名构建在依赖签名后运行这些检查；其他构建在 `prepare:dsh` 中运行。[Host smoke](scripts/smoke-runtime.ts) 使用捆绑的 Python 创建 DOCX、XLSX 和 PPTX 输入，通过真实 Office 提供方逐一转换并检查 PDF 输出。每个组装后的应用（包括目录包和 Windows 未签名构建）都会针对 ASAR 重复产物和 Host 检查。归档完整性检查将归档内完整描述符与准备结果比对，并核对归档和解包目录中的文件内容与清单、归档内文件记录的执行标志，以及解包文件的物理权限。转换失败会在写入发布记录前终止打包；macOS DMG/ZIP 构建在公证前执行这些检查。
 
@@ -299,11 +311,15 @@ pnpm run package:desktop:win:x64:unsigned
 
 该命令要求设置 `DSH_DESKTOP_APP_ID` 并具备常规构建依赖，包括编译原生模块所需的 Python 和 Visual C++ 构建工具。Python 不在 `PATH` 中时，将 `PYTHON` 设置为其可执行文件路径。命令将安装包写入 `.desktop-build/targets/win-x64/unsigned-artifacts/`，省略自动更新配置，清除签名凭据，且不生成发布完成记录。它不需要 EV 凭据或更新源地址。签名打包和上传命令仍遵循正式发布要求。
 
+打包环境可设置三个部署选项。`DSH_DESKTOP_VC_REDIST` 指向 Microsoft Visual C++ 2015-2022 运行库的绝对路径，安装程序会一并嵌入，并在 Windows 缺少该运行库时提供安装；目标平台不是 Windows，或该路径未指向文件时，打包失败。`DSH_DESKTOP_COMPRESSION` 取 `store`、`normal` 或 `maximum`，覆盖 electron-builder 的压缩级别，测试分发可最快打包，正式分发可用构建时间换取更小体积。`DSH_DESKTOP_PNPM_STORE_DIR` 指向一个绝对路径的 pnpm 存储目录，供准备阶段安装依赖，使重复运行无需访问仓库。Windows x64 工作流复用其缓存存储、应用分发的压缩级别，并通过默认关闭的 `bundle_vc_redist` 与 `portable_archive` 两个输入决定是否嵌入运行库、是否额外打包组装后应用的便携版 zip。打包的 Electron 分发仅保留 `en-US` 与 `zh-CN` 两种 Chromium 语言资源，准备的 Python 载荷也不再包含 Tk 工具包、IDLE、ensurepip 种子、字节码缓存与测试套件。
+
 ### Windows 安装界面
 
 Windows 安装程序使用原生 NSIS 页面，提供亮暗配色、系统阴影、可编辑的安装目录，以及默认勾选立即启动的完成页。安装仅面向当前用户。点击安装或按 Enter 均校验当前路径；新安装位置必须为空，非空位置必须是已登记的安装目录。受影响安装路径中的程序运行时显示系统提示，并保持应用运行；其他目录中的同名应用不阻止安装。静默更新最多等待受影响应用退出十秒，若仍在运行则以退出码 2 结束。
 
 主题在启动时跟随 Windows；可用 `/THEME=light`、`/THEME=dark` 和 `/THEME=auto` 显式选择配色。窗口在品牌控件准备完成后显示。欢迎页首次出现时，安装窗口会一次性移到普通窗口前方；若焦点在其他窗口，任务栏按钮会闪烁提示，但安装窗口不会始终置顶。进度读取锁定版本的 7-Zip 解压器百分比；目录替换、注册和清理仍使用有界估算。加权百分比不代表剩余时间。NSIS 报告成功后，进度条用 600 毫秒补满并短暂显示 100%，再显示完成页；切换目标时长为 750 毫秒。完成页保留窗口位置。点击完成后，安装程序先隐藏窗口，再启动已安装的可执行文件；启动失败会恢复页面以供重试。目录替换和失败恢复遵循上文描述的安装流程。首次启动的配置档案准备仍属于独立的 Desktop 操作。
+
+安装要求 64 位 Windows 10 或更高版本；预检会直接报告，而不会安装一个系统无法运行的应用。Office 预览和随包分发的原生模块需要 Windows 并未自带的 Microsoft Visual C++ 2015-2022 运行库：当 64 位运行库缺失且安装包已嵌入该运行库时，交互式安装会先询问再运行，无人值守安装则不询问直接运行。用户拒绝、安装失败或安装包未嵌入时，应用仍会完成安装，结果记入安装日志，运行库就绪后 Office 预览即可使用。
 
 Windows 打包使用 Visual C++ Build Tools 和 Windows SDK 编译 x86 Win32/GDI+ 辅助库；签名构建通过已配置的 Windows 签名器对该库签名。准备钩子在所有平台上均由 electron-builder 继续负责收集生产依赖。[安装界面决策](../../.agents/notes/implemented/architecture/2026-09-10-windows-native-installer-pages.zh.md)记录 NSIS 接入方式和发布验证要求。
 
@@ -437,10 +453,13 @@ node apps/desktop/node_modules/pnpm/bin/pnpm.mjs --dir apps/desktop run test:upd
 
 未打包的 Electron 进程使用应用目录下的 `.desktop-build/development/project` 作为开发项目。`DSH_DESKTOP_PNPM_ENTRY` 和 `DSH_DESKTOP_DSH_DIR` 是带应用路径默认值的可选覆盖项。每次未打包启动都必须设置 `DSH_DESKTOP_PRIMARY_RUNTIME_DIR`：开发启动器（`dev:desktop`、`start:desktop` 及工作区更新验证运行器）会把它设置为自己已准备目标的 primary-runtime 目录；缺少该变量的启动会以致命启动对话框失败。启动器必须设置它，因为壳无法从 `process.arch` 推导该目录：构建目标将 Windows 固定为 x64，而宿主可能是 arm64。打包应用会忽略这些变量，从 `process.resourcesPath` 解析签名资源，并使用受管 Desktop profile。
 
+`DSH_DESKTOP_SOFTWARE_RENDERING` 为打包与未打包启动统一选择渲染方式，并在 Electron 就绪前读取，因为 Chromium 在初始化期间就会启动 GPU 进程。取值为 `1` 时禁用硬件加速，改用不依赖 GPU 的 Chromium 开关渲染，适用于 GPU 进程失败、窗口空白的虚拟机和远程桌面会话；取值为 `0` 或未设置时保持硬件加速路径。其他取值会使启动失败。
+
 ## 已知限制
 
 - 账号登录尚未接入；登录按钮禁用。Windows 材质效果仍需平台验证。
 
+- LibreOfficeKit 的原生引导通过受旧版 `MAX_PATH` 限制约束的 API 读取自身程序文件，因此 Office 转换要求应用路径短于 260 个字符；安装路径过深时转换会失败，即便文件都在。
 - 发布签名、公证、更新托管和跨上一版本的已安装产物验证需要生产发布环境。
 - 依赖的生命周期脚本遵循 pnpm 的构建权限；Desktop 不提供单独的审批对话框。
 - 桌面壳与 CLI dsh 共享 `$DSH_HOME` 下的会话、设置、凭据、工作区和存储，但可执行包、插件激活和锁文件彼此隔离。
