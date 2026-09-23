@@ -23,6 +23,7 @@ ManifestDPIAware true
     !include "${INSTALLER_SOURCE_DIR}\theme.nsh"
     !include "${INSTALLER_SOURCE_DIR}\pages.nsh"
     !include "${INSTALLER_SOURCE_DIR}\lifecycle.nsh"
+    !include "${INSTALLER_SOURCE_DIR}\runtime.nsh"
     Function InstallerCheckAppRunning
       !insertmacro customCheckAppRunning
     FunctionEnd
@@ -209,6 +210,8 @@ ManifestDPIAware true
   !insertmacro dshFinishDirectories
   ; Standard uninstall-entry metadata read by inventory tools; the upstream template records it only under its private key.
   WriteRegStr SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" InstallLocation "$INSTDIR"
+  ; The application files exist by now, so the bundled runtime installer can run from $INSTDIR.
+  Call InstallerInstallVcRuntime
   ${If} $0 == 1
     SetErrors
   ${Else}

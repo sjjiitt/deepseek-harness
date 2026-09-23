@@ -473,6 +473,11 @@ export async function packageTarget(
   await execute(['run', 'prepare:dsh', ...(signPrimaryRuntime ? ['--defer-runtime-smoke'] : [])], downloadEnv)
   if (signPrimaryRuntime) await execute(['run', 'sign:primary-runtime', '--dsh'], electronBuilderEnv)
   if (invocation.prepareOnly) return
+  // The package's TypeScript project is already built by build:official, so only its bundler runs:
+  // the root workspace build leaves workspace imports external, which the packaged application
+  // cannot resolve, while the package's own bundling inlines them and leaves only production
+  // dependencies that electron-builder ships.
+  await execute(['exec', 'tsdown'], buildEnv)
   if (target.platform === 'darwin' && !invocation.directory) {
     await execute([
       ...desktopElectronBuilderArguments(target, true),
