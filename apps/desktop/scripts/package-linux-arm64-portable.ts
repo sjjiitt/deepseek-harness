@@ -12,6 +12,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { basename, join, resolve } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
+import { materializeBrandInjection, resolveBrandInjection } from './brand-assets.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
@@ -189,7 +190,7 @@ DSH_DESKTOP_NO_SANDBOX=1 ./run-deepseek-harness.sh
 `
 }
 
-function main(): void {
+async function main(): Promise<void> {
   if (process.platform !== 'linux' || process.arch !== 'arm64') {
     throw new Error('desktop portable: linux-arm64 portable packaging requires a Linux arm64 build host')
   }
@@ -202,54 +203,65 @@ function main(): void {
     DSH_DESKTOP_PORTABLE: '1',
     DSH_DESKTOP_APP_ID: process.env.DSH_DESKTOP_APP_ID?.trim() || DEFAULT_APP_ID,
   }
-  pnpm(['run', 'build:official'], environment, REPOSITORY_ROOT)
-  pnpm(['run', 'release:pack', '--family', 'dsh', '--out', paths.packedDsh], environment, REPOSITORY_ROOT)
-  pnpm(['--dir', 'apps/desktop-host', 'pack', '--pack-destination', paths.packedDsh], environment, REPOSITORY_ROOT)
-  pnpm(['run', 'release:pack', '--family', 'vendor', '--out', paths.packedVendor], environment, REPOSITORY_ROOT)
-  rmSync(paths.packedLandlock, { recursive: true, force: true })
-  mkdirSync(paths.packedLandlock, { recursive: true })
-  pnpm(['--dir', 'native/system', 'run', 'build:ts'], environment, REPOSITORY_ROOT)
-  pnpm(['--dir', 'native/system/packages/entry', 'pack', '--pack-destination', paths.packedLandlock], environment, REPOSITORY_ROOT)
-  pnpm(['run', 'prepare:runtime'], environment, APP_ROOT)
-  pnpm(['run', 'prepare:packages'], environment, APP_ROOT)
-  pnpm(['run', 'prepare:dsh'], environment, APP_ROOT)
-  // The package's TypeScript project is already built by build:official, so only its bundler runs:
-  // the root workspace build leaves workspace imports external, which the packaged application
-  // cannot resolve, while the package's own bundling inlines them and leaves only production
-  // dependencies that electron-builder ships.
-  pnpm(['exec', 'tsdown'], environment, APP_ROOT)
-  rmSync(paths.artifacts, { recursive: true, force: true })
-  pnpm([
-    'exec', 'electron-builder', '--config', 'electron-builder.config.mjs',
-    '--linux', '--arm64', '--dir', '--publish', 'never',
-  ], environment, APP_ROOT)
-  pnpm(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts'], environment, APP_ROOT)
+  // Brand assets replace repository sources only for this run; a failure still
+  // restores the upstream artwork (see restoreBrand in the finally below).
+  const brand = await resolveBrandInjection(environment)
+  const restoreBrand = brand === undefined ? undefined : materializeBrandInjection(brand, APP_ROOT)
+  try {
+    pnpm(['run', 'build:official'], environment, REPOSITORY_ROOT)
+    pnpm(['run', 'release:pack', '--family', 'dsh', '--out', paths.packedDsh], environment, REPOSITORY_ROOT)
+    pnpm(['--dir', 'apps/desktop-host', 'pack', '--pack-destination', paths.packedDsh], environment, REPOSITORY_ROOT)
+    pnpm(['run', 'release:pack', '--family', 'vendor', '--out', paths.packedVendor], environment, REPOSITORY_ROOT)
+    rmSync(paths.packedLandlock, { recursive: true, force: true })
+    mkdirSync(paths.packedLandlock, { recursive: true })
+    pnpm(['--dir', 'native/system', 'run', 'build:ts'], environment, REPOSITORY_ROOT)
+    pnpm(['--dir', 'native/system/packages/entry', 'pack', '--pack-destination', paths.packedLandlock], environment, REPOSITORY_ROOT)
+    pnpm(['run', 'prepare:runtime'], environment, APP_ROOT)
+    pnpm(['run', 'prepare:packages'], environment, APP_ROOT)
+    // The post-package smoke (smoke-packaged-runtime) exercises the Office
+    // conversion on the assembled tree, so the prepared-runtime Office smoke here
+    // repeated it on every packaging run for ~65 s; defer it to that single pass.
+    pnpm(['run', 'prepare:dsh', '--defer-runtime-smoke'], environment, APP_ROOT)
+    // The package's TypeScript project is already built by build:official, so only its bundler runs:
+    // the root workspace build leaves workspace imports external, which the packaged application
+    // cannot resolve, while the package's own bundling inlines them and leaves only production
+    // dependencies that electron-builder ships.
+    pnpm(['exec', 'tsdown'], environment, APP_ROOT)
+    rmSync(paths.artifacts, { recursive: true, force: true })
+    pnpm([
+      'exec', 'electron-builder', '--config', 'electron-builder.config.mjs',
+      '--linux', '--arm64', '--dir', '--publish', 'never',
+    ], environment, APP_ROOT)
+    pnpm(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts'], environment, APP_ROOT)
 
-  const bundleName = `deepseek-harness-${version}-linux-arm64`
-  const portableRoot = join(paths.artifacts, 'portable')
-  const bundleRoot = join(portableRoot, bundleName)
-  const unpacked = ['linux-arm64-unpacked', 'linux-unpacked']
-    .map(name => join(paths.artifacts, name))
-    .find(candidate => existsSync(candidate))
-  if (unpacked === undefined) {
-    throw new Error('desktop portable: electron-builder produced no unpacked application directory')
+    const bundleName = `deepseek-harness-${version}-linux-arm64`
+    const portableRoot = join(paths.artifacts, 'portable')
+    const bundleRoot = join(portableRoot, bundleName)
+    const unpacked = ['linux-arm64-unpacked', 'linux-unpacked']
+      .map(name => join(paths.artifacts, name))
+      .find(candidate => existsSync(candidate))
+    if (unpacked === undefined) {
+      throw new Error('desktop portable: electron-builder produced no unpacked application directory')
+    }
+    rmSync(portableRoot, { recursive: true, force: true })
+    mkdirSync(portableRoot, { recursive: true })
+    renameSync(unpacked, bundleRoot)
+    // The Linux window manager reads the square icon beside the packaged app; the desktop entry and
+    // the launcher resolve it from `resources/`. A deployment that injects its own artwork replaces
+    // this source file through the brand-asset materialization step.
+    copyFileSync(join(APP_ROOT, 'resources', 'icon.png'), join(bundleRoot, 'resources', 'app-icon.png'))
+    writeFileSync(join(bundleRoot, 'run-deepseek-harness.sh'), LAUNCHER, { mode: 0o755 })
+    writeFileSync(join(bundleRoot, 'install-desktop-entry.sh'), DESKTOP_ENTRY_INSTALLER, { mode: 0o755 })
+    writeFileSync(join(bundleRoot, 'README.md'), bundleReadme(version))
+    const tarball = join(portableRoot, `${bundleName}.tar.gz`)
+    execFileSync('tar', ['-C', portableRoot, '-czf', tarball, bundleName], { stdio: 'inherit' })
+    const digest = execFileSync('sha256sum', [tarball], { encoding: 'utf8' }).split(/\s+/u)[0]
+    writeFileSync(`${tarball}.sha256`, `${digest ?? ''}  ${basename(tarball)}\n`)
+    process.stdout.write(`desktop portable: ${tarball}\n`)
+    process.stdout.write(`desktop portable: ${tarball}.sha256\n`)
+  } finally {
+    restoreBrand?.()
   }
-  rmSync(portableRoot, { recursive: true, force: true })
-  mkdirSync(portableRoot, { recursive: true })
-  renameSync(unpacked, bundleRoot)
-  // The Linux window manager reads the square icon beside the packaged app; the desktop entry and
-  // the launcher resolve it from `resources/`. A deployment that injects its own artwork replaces
-  // this source file through the brand-asset materialization step.
-  copyFileSync(join(APP_ROOT, 'resources', 'icon.png'), join(bundleRoot, 'resources', 'app-icon.png'))
-  writeFileSync(join(bundleRoot, 'run-deepseek-harness.sh'), LAUNCHER, { mode: 0o755 })
-  writeFileSync(join(bundleRoot, 'install-desktop-entry.sh'), DESKTOP_ENTRY_INSTALLER, { mode: 0o755 })
-  writeFileSync(join(bundleRoot, 'README.md'), bundleReadme(version))
-  const tarball = join(portableRoot, `${bundleName}.tar.gz`)
-  execFileSync('tar', ['-C', portableRoot, '-czf', tarball, bundleName], { stdio: 'inherit' })
-  const digest = execFileSync('sha256sum', [tarball], { encoding: 'utf8' }).split(/\s+/u)[0]
-  writeFileSync(`${tarball}.sha256`, `${digest ?? ''}  ${basename(tarball)}\n`)
-  process.stdout.write(`desktop portable: ${tarball}\n`)
-  process.stdout.write(`desktop portable: ${tarball}.sha256\n`)
 }
 
-main()
+void main()

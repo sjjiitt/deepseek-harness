@@ -105,7 +105,11 @@ describe('installer preparation preserves application dependencies', () => {
     expect(config.compression).toBeUndefined()
     expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_COMPRESSION: 'store' }, 'win32', 'x64').compression).toBe('store')
     expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_COMPRESSION: 'fast' }, 'win32', 'x64'))
-      .toThrow('DSH_DESKTOP_COMPRESSION must be store, normal or maximum')
+      .toThrow('DSH_DESKTOP_COMPRESSION must be store or normal')
+    // maximum was measured as a no-op on the NSIS artifact (282.3 vs 282.4 MB), so it is rejected
+    // instead of accepted as a slow no-op.
+    expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_COMPRESSION: 'maximum' }, 'win32', 'x64'))
+      .toThrow('DSH_DESKTOP_COMPRESSION must be store or normal')
   })
 
   it('names unsigned Windows artifacts so they cannot pass for release builds', async () => {

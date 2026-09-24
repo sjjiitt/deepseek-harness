@@ -225,6 +225,17 @@ pnpm run package:desktop:linux:arm64:portable
 
 每个目标都在 `apps/desktop/.desktop-build/targets/<target>/` 下持有自己的打包输入、已准备运行时、包集合、dsh 依赖树、pnpm 准备状态、未打包应用、更新元数据和最终产物。Electron 归档缓存继续由 `.desktop-build/downloads` 共享，因为每个归档文件名都包含版本、平台和架构，并且在解包前经过验证。目标构建绝不读取其他目标的可变准备状态。
 
+### 品牌注入
+
+仓库只保留上游美术资产。部署方在构建时通过 `DSH_DESKTOP_BRAND_ARCHIVE`（zip 文件或同布局目录）或 `DSH_DESKTOP_BRAND_ARCHIVE_BASE64`（zip 字节，供 CI 密钥场景）注入自有品牌资产；两个变量同样接受写入平台 dotenv 文件。打包过程把压缩包条目按白名单路径落到源文件上，构建结束后还原上游文件，品牌资产因此不进仓库：
+
+- `resources/icon.png`、`resources/icon-macos.png`、`resources/icon-windows.png` —— 各平台图标，构建器据此生成可执行文件与安装程序图标；
+- `resources/brand-favicon-64.png` —— Linux 窗口图标（存在时经 `extraResources` 进入打包资源；无品牌构建则窗口图标交由桌面入口提供）；
+- `resources/brand-row.png` —— 窗口图标旁的预留资源位；
+- `renderer/assets/welcome-brand.svg` —— 欢迎页横版标识（替换 `.svg` 本身，而非提供 `.png`；用内嵌该 PNG 的 SVG 即可）。
+
+两个打包入口都执行注入，Linux 便携包、Windows 安装包与 macOS 镜像以同一方式取得资产。白名单之外的压缩包条目会直接使构建失败，而不是被跳过。
+
 ### 运行时文件筛选
 
 Desktop 在本地打包工作区包，并通过目标捆绑的 Node 和 pnpm 安装外部依赖。[Desktop 文件策略](scripts/runtime-file-policy.ts)随后在签名和完整性封装前过滤不可变的 `resources/app.asar/dsh/node_modules` 副本。它排除 TypeScript 声明、已识别的 JavaScript/CSS/TypeScript source map、TypeScript 构建缓存、Domino 测试目录、选定的原生编译器输出和其他平台的 node-pty 预构建文件。它保留运行时 JavaScript、原生模块及其 DLL/EXE 辅助文件、WASM、未知资源、许可证和 notices。依赖清单在完整性封装前经过 electron-builder 的元数据清理，确保归档保持已记录的字节。该策略不修改 npm tarball、捆绑的包管理器或用户安装的插件文件。
@@ -311,7 +322,7 @@ pnpm run package:desktop:win:x64:unsigned
 
 该命令要求设置 `DSH_DESKTOP_APP_ID` 并具备常规构建依赖，包括编译原生模块所需的 Python 和 Visual C++ 构建工具。Python 不在 `PATH` 中时，将 `PYTHON` 设置为其可执行文件路径。命令将安装包写入 `.desktop-build/targets/win-x64/unsigned-artifacts/`，省略自动更新配置，清除签名凭据，且不生成发布完成记录。它不需要 EV 凭据或更新源地址。签名打包和上传命令仍遵循正式发布要求。
 
-打包环境可设置三个部署选项。`DSH_DESKTOP_VC_REDIST` 指向 Microsoft Visual C++ 2015-2022 运行库的绝对路径，安装程序会一并嵌入，并在 Windows 缺少该运行库时提供安装；目标平台不是 Windows，或该路径未指向文件时，打包失败。`DSH_DESKTOP_COMPRESSION` 取 `store`、`normal` 或 `maximum`，覆盖 electron-builder 的压缩级别，测试分发可最快打包，正式分发可用构建时间换取更小体积。`DSH_DESKTOP_PNPM_STORE_DIR` 指向一个绝对路径的 pnpm 存储目录，供准备阶段安装依赖，使重复运行无需访问仓库。Windows x64 工作流复用其缓存存储、应用分发的压缩级别，并通过默认关闭的 `bundle_vc_redist` 与 `portable_archive` 两个输入决定是否嵌入运行库、是否额外打包组装后应用的便携版 zip。打包的 Electron 分发仅保留 `en-US` 与 `zh-CN` 两种 Chromium 语言资源，准备的 Python 载荷也不再包含 Tk 工具包、IDLE、ensurepip 种子、字节码缓存与测试套件。
+打包环境可设置三个部署选项。`DSH_DESKTOP_VC_REDIST` 指向 Microsoft Visual C++ 2015-2022 运行库的绝对路径，安装程序会一并嵌入，并在 Windows 缺少该运行库时提供安装；目标平台不是 Windows，或该路径未指向文件时，打包失败。`DSH_DESKTOP_COMPRESSION` 取 `store` 或 `normal`，覆盖 electron-builder 的压缩级别，测试分发可最快打包；`maximum` 在 NSIS 产物上实测无收益（体积仅差 0.1 MB 而打包明显变慢），已被移除不再接受。`DSH_DESKTOP_PNPM_STORE_DIR` 指向一个绝对路径的 pnpm 存储目录，供准备阶段安装依赖，使重复运行无需访问仓库。Windows x64 工作流复用其缓存存储、应用分发的压缩级别，并通过默认关闭的 `bundle_vc_redist` 与 `portable_archive` 两个输入决定是否嵌入运行库、是否额外打包组装后应用的便携版 zip。打包的 Electron 分发仅保留 `en-US` 与 `zh-CN` 两种 Chromium 语言资源，准备的 Python 载荷也不再包含 Tk 工具包、IDLE、ensurepip 种子、字节码缓存与测试套件。
 
 ### Windows 安装界面
 

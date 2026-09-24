@@ -22,7 +22,6 @@ on:
         type: choice
         options:
           - normal
-          - maximum
           - store
         default: normal
       bundle_vc_redist:

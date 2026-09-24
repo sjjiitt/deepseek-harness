@@ -28,6 +28,7 @@ import { installWindowsDirectoryInstaller } from './windows-directory-installer.
 import { preserveWindowsRuntimeSignature, signWindowsCode } from './windows-runtime-signature.mjs'
 import { prepareWindowsAsarUnpack, verifyWindowsAsarUnpack } from './windows-asar-unpack.mjs'
 import { recordPackagingEvent } from './packaging-run.mjs'
+import { presentBrandResourceFiles } from './brand-assets.mjs'
 import {
   resolveMacOSAppUpdateFeed,
   verifyMacOSAppUpdateConfig,
@@ -165,6 +166,11 @@ export function createElectronBuilderConfig(
       { from: fileURLToPath(new URL(portable ? '../resources/icon.png' : '../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+      // Brand window-icon channel (main.ts windowIconPath reads brand-favicon-64.png):
+      // the repository ships no brand files, so these entries only exist when
+      // brand injection materialized them before the build.
+      ...presentBrandResourceFiles(fileURLToPath(new URL('../resources', import.meta.url)))
+        .map(name => ({ from: fileURLToPath(new URL(`../resources/${name}`, import.meta.url)), to: name })),
       ...vcRedist === undefined ? [] : [{ from: vcRedist, to: 'vc_redist.x64.exe' }],
     ],
     mac: {
@@ -277,14 +283,17 @@ export function createElectronBuilderConfig(
 /**
  * Resolve the artifact compression a packaging environment selects. An absent value keeps
  * electron-builder's own default; `store` trades a larger artifact for the fastest packaging.
+ * `maximum` was removed: measured against the default on the Windows NSIS artifact it saved
+ * 0.1 MB (282.3 vs 282.4 MB) while stretching the packaging step, so accepting the value
+ * would only slow builds down.
  * @param {NodeJS.ProcessEnv} env - Packaging environment.
- * @returns {'store' | 'normal' | 'maximum' | undefined} Selected compression level.
+ * @returns {'store' | 'normal' | undefined} Selected compression level.
  */
 function resolveDesktopCompression(env) {
   const configured = env.DSH_DESKTOP_COMPRESSION
   if (configured === undefined) return undefined
-  if (!['store', 'normal', 'maximum'].includes(configured)) {
-    throw new Error(`desktop package: DSH_DESKTOP_COMPRESSION must be store, normal or maximum, received ${configured}`)
+  if (!['store', 'normal'].includes(configured)) {
+    throw new Error(`desktop package: DSH_DESKTOP_COMPRESSION must be store or normal, received ${configured}; 'maximum' is no longer accepted (measured as a no-op on the NSIS artifact)`)
   }
   return configured
 }
