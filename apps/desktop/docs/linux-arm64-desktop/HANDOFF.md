@@ -105,6 +105,7 @@ pwsh -File apps/desktop/docs/linux-arm64-desktop/ci-run.ps1 -Workflow desktop-li
 |---|---|
 | Kylin 下菜单 "Edit" 是英文而"应用"是中文 | 裸 `role:'editMenu'` 的标题/子项由 Electron 按 **Chromium 语言**本地化，与壳字典来源不同。**已修**（`main.ts` 用字典自建编辑菜单；右键菜单也走字典）。临时不改包可用 `run-deepseek-harness.sh` 加 `--lang=zh-CN` |
 | Kylin 真机启动报 `Failed to load module "canberra-gtk-module"` | 会话通过 `GTK_MODULES` 注入了 bundle 不携带的 canberra 模块（宿主也不一定装），GTK 每次启动都报加载失败。**已修**（2026-09-28）：launcher 覆盖 `GTK_MODULES=gail:atk-bridge`，保留无障碍桥接；部署若自带该模块，可用 `DSH_DESKTOP_GTK_MODULES` 指定自己的列表 |
+| 无 GPU 真机报 GPU 相关错误或主窗口空白 | Chromium 在初始化期间启动 GPU 进程，无渲染设备时失败即报错/白窗（`DSH_DESKTOP_SOFTWARE_RENDERING=1` 本来就是为此设的开关，但默认不设）。**已修**（2026-09-28）：launcher 检测不到 `/dev/dri/renderD128` 时自动置 `DSH_DESKTOP_SOFTWARE_RENDERING=1`（软件渲染：`--disable-gpu --disable-gpu-compositing --in-process-gpu`）；该变量显式设为 `0`/`1` 时仍以显式值为准 |
 | 连接状态反复"重新连接中/连接成功"、Office 预览被中断 | 网关心跳在慢宿主上误杀健康连接。桌面叠加配置 `apps/desktop-host/desktop-defaults.patch.yml` 把 `websocketHeartbeatIntervalMs` 调大；launcher 加抗节流 flags |
 | Office 预览失败（docx/pptx "signal is aborted"、xlsx 转圈） | LibreOfficeKit 原生引导受 `MAX_PATH` 限制：**应用路径要短**；打包侧已加超时/大小上限，Windows 侧有短路径重定位 |
 | asar 相关失败 | Linux 便携通道刻意 `asar:false`：Electron 的 asar 对缺失路径返回 `null`（不是 `undefined`），会破坏 kit 的 WASM 回退判断 |

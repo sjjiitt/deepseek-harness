@@ -24,6 +24,13 @@ describe('Linux arm64 portable launcher', () => {
     expect(launcher).toContain('exec "$here/deepseek-harness" $flags "$@"')
   })
 
+  it('selects the CPU rendering path when the host has no DRM render node', () => {
+    const launcher = portableLauncher()
+    expect(launcher).toContain('if [ -z "${DSH_DESKTOP_SOFTWARE_RENDERING:-}" ] && [ ! -e /dev/dri/renderD128 ]; then')
+    expect(launcher).toContain('DSH_DESKTOP_SOFTWARE_RENDERING=1')
+    expect(launcher).toContain('export DSH_DESKTOP_SOFTWARE_RENDERING')
+  })
+
   it('passes the sandbox switch only when the deployment asks for it', () => {
     const launcher = portableLauncher()
     expect(launcher).toContain('if [ "${DSH_DESKTOP_NO_SANDBOX:-0}" = 1 ]; then')

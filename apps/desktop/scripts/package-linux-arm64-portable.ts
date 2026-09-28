@@ -65,6 +65,14 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # list when it ships the module.
 GTK_MODULES="\${DSH_DESKTOP_GTK_MODULES:-gail:atk-bridge}"
 export GTK_MODULES
+# Chromium starts a GPU process while it initializes and leaves a blank window when none can start,
+# which is what a GPU-less host reports. A host with no DRM render node has no device to accelerate
+# through, so select the CPU path before the shell reads the variable; an explicit
+# DSH_DESKTOP_SOFTWARE_RENDERING still wins.
+if [ -z "\${DSH_DESKTOP_SOFTWARE_RENDERING:-}" ] && [ ! -e /dev/dri/renderD128 ]; then
+  DSH_DESKTOP_SOFTWARE_RENDERING=1
+  export DSH_DESKTOP_SOFTWARE_RENDERING
+fi
 # Keep the renderer responsive when the window is occluded, minimized, or software rendered:
 # Chromium otherwise throttles timers there and the Host terminates the heartbeat-starved socket.
 flags="--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --class=deepseek-harness"
@@ -189,6 +197,11 @@ The launcher replaces the desktop's GTK module list, because Kylin exports
 \`canberra-gtk-module\` and this bundle does not carry it; GTK otherwise reports
 a failed module load on every launch. Export \`DSH_DESKTOP_GTK_MODULES\` to keep a
 module the deployment needs.
+
+Rendering follows the host: a machine without a DRM render node
+(\`/dev/dri/renderD128\`) starts on the CPU path, because Chromium otherwise fails
+to start a GPU process and can leave the window blank. Export
+\`DSH_DESKTOP_SOFTWARE_RENDERING\` to \`0\` or \`1\` to decide it explicitly.
 
 If the application reports a Chromium sandbox error, either prepare the setuid
 helper once as root:
