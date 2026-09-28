@@ -50,11 +50,21 @@ function pnpm(args: readonly string[], environment: NodeJS.ProcessEnv, cwd: stri
   }
 }
 
-/** Launcher written beside the packaged application. */
-const LAUNCHER = `#!/bin/sh
+/**
+ * Launcher written beside the packaged application.
+ * @returns The shell script installed as `run-deepseek-harness.sh`.
+ */
+export function portableLauncher(): string {
+  return `#!/bin/sh
 # Launch the packaged DeepSeek Harness application from this directory.
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+# Kylin and other desktops export canberra-gtk-module through GTK_MODULES, and this bundle carries no
+# such module: GTK reports a failed module load on every launch. Keep the accessibility bridge, which
+# needs the session bus rather than a module the host may lack, and let a deployment name its own
+# list when it ships the module.
+GTK_MODULES="\${DSH_DESKTOP_GTK_MODULES:-gail:atk-bridge}"
+export GTK_MODULES
 # Keep the renderer responsive when the window is occluded, minimized, or software rendered:
 # Chromium otherwise throttles timers there and the Host terminates the heartbeat-starved socket.
 flags="--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --class=deepseek-harness"
@@ -64,6 +74,7 @@ fi
 # shellcheck disable=SC2086 # flags is an intentional word-split list.
 exec "$here/deepseek-harness" $flags "$@"
 `
+}
 
 /**
  * Launcher installer written beside the packaged application. It writes a
@@ -174,6 +185,11 @@ compatible). Every bundled program references no GLIBC symbol newer than 2.28;
 the desktop environment still supplies the usual Electron libraries such as
 libnss3, libgbm, and libasound2.
 
+The launcher replaces the desktop's GTK module list, because Kylin exports
+\`canberra-gtk-module\` and this bundle does not carry it; GTK otherwise reports
+a failed module load on every launch. Export \`DSH_DESKTOP_GTK_MODULES\` to keep a
+module the deployment needs.
+
 If the application reports a Chromium sandbox error, either prepare the setuid
 helper once as root:
 
@@ -250,7 +266,7 @@ async function main(): Promise<void> {
     // the launcher resolve it from `resources/`. A deployment that injects its own artwork replaces
     // this source file through the brand-asset materialization step.
     copyFileSync(join(APP_ROOT, 'resources', 'icon.png'), join(bundleRoot, 'resources', 'app-icon.png'))
-    writeFileSync(join(bundleRoot, 'run-deepseek-harness.sh'), LAUNCHER, { mode: 0o755 })
+    writeFileSync(join(bundleRoot, 'run-deepseek-harness.sh'), portableLauncher(), { mode: 0o755 })
     writeFileSync(join(bundleRoot, 'install-desktop-entry.sh'), DESKTOP_ENTRY_INSTALLER, { mode: 0o755 })
     writeFileSync(join(bundleRoot, 'README.md'), bundleReadme(version))
     const tarball = join(portableRoot, `${bundleName}.tar.gz`)
@@ -264,4 +280,4 @@ async function main(): Promise<void> {
   }
 }
 
-void main()
+if (process.argv[1] !== undefined && import.meta.filename === resolve(process.argv[1])) await main()
