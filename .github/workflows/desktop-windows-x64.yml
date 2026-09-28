@@ -1,0 +1,192 @@
+# Build a Windows x64 Desktop installer from this tree through the unsigned
+# local-installation lane: no EV credentials, no update origin, and the artifact
+# lands under targets/win-x64/unsigned-artifacts/. Run it from
+# Actions -> "Desktop Windows x64" -> Run workflow.
+#
+# The unsigned lane still requires the selected mandatory-update origin, so the
+# job writes a local .env.windows with the application ID and a placeholder
+# origin; packaging never contacts it. It reuses the cached pnpm store and the
+# selected compression level; `bundle_vc_redist` embeds Microsoft's Visual C++
+# redistributable and `portable_archive` also packages a portable zip.
+name: Desktop Windows x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Attach the built installer to a GitHub Release.
+        type: boolean
+        default: false
+      compression:
+        description: Artifact compression. store packages fastest and largest.
+        type: choice
+        options:
+          - normal
+          - store
+        default: normal
+      bundle_vc_redist:
+        description: Embed Microsoft's Visual C++ redistributable for offline machines.
+        type: boolean
+        default: false
+      portable_archive:
+        description: Also package a portable zip of the assembled application.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  # CI runs must never report to the production telemetry endpoint baked
+  # into apps/cli/cordis.yml.
+  DSH_TELEMETRY_DISABLED: '1'
+  DSH_BUILD_CLIENT_PROFILE: official
+  PRIMARY_NODE_VERSION: '24'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: win-x64 desktop unsigned
+    # The bundled interpreters and every native module are architecture
+    # specific, and the installer helper needs the Visual C++ build tools the
+    # hosted image already carries.
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Configure runner-private caches
+        shell: pwsh
+        run: |
+          "NODE_COMPILE_CACHE=${{ runner.temp }}\node-compile-cache" >> $env:GITHUB_ENV
+          "npm_config_devdir=${{ runner.temp }}\node-gyp" >> $env:GITHUB_ENV
+          "TMPDIR=${{ runner.temp }}" >> $env:GITHUB_ENV
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Configure the pnpm store path
+        shell: pwsh
+        run: '"PNPM_CONFIG_STORE_DIR=${{ runner.temp }}\pnpm-store" >> $env:GITHUB_ENV'
+
+      # Saving on miss matters here: this lane restores the store it writes, so the packaged runtime's
+      # own dependency install can resolve from it on the next run instead of fetching the closure.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: win-x64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            win-x64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      # Electron, Node, Python and the locked wheels are version-keyed rather than commit-keyed, so a
+      # repeat run reuses the archives the runtime preparation would otherwise refetch.
+      - uses: actions/cache@v4
+        with:
+          path: apps/desktop/.desktop-build/downloads
+          key: win-x64-runtime-downloads-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/package.json', 'scripts/primary-runtime/lock.json') }}
+          restore-keys: |
+            win-x64-runtime-downloads-
+
+      - name: Install (immutable)
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            pnpm install --frozen-lockfile
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 10 }
+          }
+          exit 1
+
+      # package-target.ts imports the native system package while it loads, so
+      # its JavaScript must exist before the packaging command starts.
+      - name: Build the native system package JavaScript
+        run: pnpm --dir native/system run build:ts
+
+      - name: Write the local unsigned packaging settings
+        shell: pwsh
+        run: |
+          @(
+            'DSH_DESKTOP_APP_ID=com.deepseek.harness'
+            'DSH_DESKTOP_AUTO_UPDATE_ENV=test'
+            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://policy.invalid'
+            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=''{"allowedAuthOrigins":["https://login.invalid"]}'''
+          ) | Set-Content -Path apps/desktop/.env.windows -Encoding utf8
+
+      # Windows does not ship the Visual C++ runtime that Office preview and the native modules load.
+      # The installer offers Microsoft's redistributable when it is embedded, so this lane fetches the
+      # official download and verifies its publisher signature before the packaging step sees it.
+      - name: Fetch the Microsoft Visual C++ redistributable
+        if: inputs.bundle_vc_redist
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'vc_redist.x64.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $path
+          $signature = Get-AuthenticodeSignature $path
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "unexpected redistributable signature: $($signature.Status) / $($signature.SignerCertificate.Subject)"
+          }
+          "DSH_DESKTOP_VC_REDIST=$path" >> $env:GITHUB_ENV
+
+      # The prepared runtime installs its dependency closure with pnpm; pointing that install at the
+      # store this job already caches keeps repeat runs off the registry.
+      - name: Build the unsigned Windows installer
+        env:
+          DSH_DESKTOP_COMPRESSION: ${{ inputs.compression }}
+          DSH_DESKTOP_PNPM_STORE_DIR: ${{ runner.temp }}/pnpm-store
+        run: pnpm run package:desktop:win:x64:unsigned
+
+      # The NSIS installer serves machines whose users can install; the portable archive serves
+      # intranet and remote-desktop machines that copy a folder instead. Windows ships bsdtar, whose
+      # zip writer switches to Zip64 for this payload size.
+      - name: Package the portable archive
+        if: inputs.portable_archive
+        shell: pwsh
+        run: |
+          $artifacts = 'apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          $version = node -p "require('./apps/desktop/package.json').version"
+          $archive = Join-Path $artifacts "deepseek-harness-$version-win-x64-unsigned-portable.zip"
+          tar.exe -a -c -f $archive -C (Join-Path $artifacts 'win-unpacked') .
+          if (-not (Test-Path $archive)) { throw 'the portable archive was not created' }
+          Get-Item $archive | Select-Object -ExpandProperty Length
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-windows-x64-unsigned
+          path: |
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.blockmap
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # Fork Actions run with the invoking token; `gh` is preinstalled on the
+      # hosted image, and the job-level `contents: write` grant lets the upload
+      # land.
+      - name: Publish the GitHub Release
+        if: inputs.publish_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./apps/desktop/package.json').version"
+          $tag = "desktop-win-x64-v$version"
+          $notes = "Unsigned DeepSeek Harness desktop installer and portable archive for Windows x64, built from $env:GITHUB_SHA."
+          if (gh release view $tag 2>$null) {
+            gh release edit $tag --notes $notes
+          } else {
+            gh release create $tag --title $tag --notes $notes
+          }
+          gh release upload $tag @(Get-ChildItem apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts -Filter '*.exe').FullName `
+            @(if ('${{ inputs.portable_archive }}' -eq 'true') { (Get-ChildItem apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts -Filter '*.zip').FullName }) --clobber

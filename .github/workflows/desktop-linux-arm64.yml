@@ -1,0 +1,164 @@
+# Build a self-contained Linux arm64 portable directory of the DeepSeek Harness
+# desktop application for Kylin V10 SP1+ and other glibc 2.28+ arm64 distributions.
+#
+# The bundle carries Electron, the dsh runtime, and the bundled Python and pnpm
+# distributions, so it starts with no network access. This target ships no
+# update feed and no mandatory-update policy. Run it from
+# Actions -> "Desktop Linux arm64" -> Run workflow.
+name: Desktop Linux arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Attach the built tarball to a GitHub Release.
+        type: boolean
+        default: false
+      glibc_floor:
+        description: Maximum GLIBC symbol version the bundle may reference. The Electron shell measures 2.28 (Kylin V10 SP1+).
+        type: string
+        default: '2.28'
+
+permissions:
+  contents: write
+
+env:
+  # CI runs must never report to the production telemetry endpoint baked
+  # into apps/cli/cordis.yml.
+  DSH_TELEMETRY_DISABLED: '1'
+  DSH_BUILD_CLIENT_PROFILE: official
+  DSH_DESKTOP_APP_ID: com.deepseek.harness
+  PRIMARY_NODE_VERSION: '24'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: linux-arm64 desktop portable
+    # The dsh runtime, the bundled interpreters and every native addon are
+    # architecture-specific, so the bundle builds on a native arm64 runner.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Configure runner-private caches
+        run: |
+          echo "NODE_COMPILE_CACHE=${{ runner.temp }}/node-compile-cache" >> "$GITHUB_ENV"
+          echo "npm_config_devdir=${{ runner.temp }}/node-gyp" >> "$GITHUB_ENV"
+          echo "TMPDIR=${{ runner.temp }}" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Configure pnpm store path
+        id: pnpm-store
+        run: |
+          store_root="$HOME/.local/share/pnpm/store"
+          echo "PNPM_CONFIG_STORE_DIR=$store_root" >> "$GITHUB_ENV"
+          echo "path=$(PNPM_CONFIG_STORE_DIR="$store_root" pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: linux-arm64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            linux-arm64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Install (immutable)
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then exit 0; fi
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
+
+      # The repository build passes --host-addon-only, which skips the Landlock
+      # launcher and the non-host flock addon. Linux confinement needs both, so
+      # build them here with the toolchain the native release lane installs.
+      - name: Build the static Landlock launcher and libc flock addons
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -yq musl-tools
+          pnpm --dir native/system run build:native
+          platform="native/system/packages/linux-arm64"
+          test -x "$platform/bin/landlock-run"
+          test -f "$platform/bin/glibc/system.node"
+          test -f "$platform/bin/musl/system.node"
+
+      # Builds the repository, prepares the Electron distribution, the bundled
+      # Python and pnpm runtimes, the dsh production tree, then assembles and
+      # smokes the unpacked application before archiving it.
+      - name: Build the desktop portable bundle
+        run: pnpm run package:desktop:linux:arm64:portable
+
+      # A host older than the runner can still load a binary that references
+      # only older GLIBC symbols, so the bundle claims a floor instead of the
+      # runner's version. The step reports the measured floor and fails when it
+      # exceeds the request, rather than at the user's first launch.
+      - name: Assert the bundle glibc floor
+        run: |
+          set -euo pipefail
+          limit="${{ inputs.glibc_floor }}"
+          root="$(ls -d apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/deepseek-harness-*-linux-arm64)" \
+            || { echo '::error::the portable bundle directory is missing'; exit 1; }
+          observed="0"
+          failed=0
+          while IFS= read -r -d '' file; do
+            # readelf exits non-zero on a non-ELF file, and pipefail would otherwise abort the whole loop there.
+            maximum="$(readelf --version-info "$file" 2>/dev/null \
+              | sed -n 's/.*Name: GLIBC_\([0-9][0-9.]*\).*/\1/p' | sort -V | tail -1 || true)"
+            [ -n "$maximum" ] || continue
+            if dpkg --compare-versions "$maximum" gt "$observed"; then observed="$maximum"; fi
+            if ! dpkg --compare-versions "$maximum" le "$limit"; then
+              echo "::error::$file references GLIBC_$maximum, above the $limit floor"
+              failed=1
+            fi
+          done < <(find "$root" -type f -print0)
+          echo "Observed GLIBC floor: $observed (requested maximum $limit)"
+          du -sh "$root"
+          [ "$failed" -eq 0 ] || exit 1
+          echo "Every bundled ELF file references GLIBC_$limit or older"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-linux-arm64-portable
+          path: |
+            apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.tar.gz
+            apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      # Fork Actions run with the invoking token; `gh` is preinstalled on the
+      # hosted image, and the job-level `contents: write` grant lets the upload
+      # land.
+      - name: Publish the GitHub Release
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          tag="desktop-linux-arm64-v$version"
+          notes="Self-contained DeepSeek Harness desktop bundle for Linux arm64 (Kylin V10 SP1+, glibc 2.28+). Unpack and run ./run-deepseek-harness.sh."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" --title "$tag" --notes "$notes"
+          fi
+          gh release upload "$tag" \
+            apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.tar.gz \
+            apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.sha256 \
+            --clobber
