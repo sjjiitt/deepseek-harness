@@ -1,5 +1,6 @@
 import { tmpdir } from 'node:os'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Arch, Platform } from 'electron-builder'
 import { Packager } from 'app-builder-lib'
 import { describe, expect, it, vi } from 'vitest'
@@ -62,6 +63,53 @@ describe('installer preparation preserves application dependencies', () => {
       vi.unstubAllEnvs()
       vi.restoreAllMocks()
     }
+  })
+
+  it('embeds a configured Visual C++ redistributable for the Windows installer', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const directory = mkdtempSync(join(tmpdir(), 'desktop-vc-redist-'))
+    const redistributable = join(directory, 'vc_redist.x64.exe')
+    writeFileSync(redistributable, 'redistributable bytes')
+    const base = {
+      DSH_DESKTOP_APP_ID: 'com.example.installer',
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
+      DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+      DSH_DESKTOP_TARGET_ARCH: 'x64',
+      DSH_DESKTOP_UNSIGNED: '1',
+    }
+    expect(createElectronBuilderConfig({ ...base }, 'win32', 'x64').extraResources)
+      .not.toContainEqual(expect.objectContaining({ to: 'vc_redist.x64.exe' }))
+    const embedded = createElectronBuilderConfig({ ...base, DSH_DESKTOP_VC_REDIST: redistributable }, 'win32', 'x64')
+    expect(embedded.extraResources).toContainEqual({ from: redistributable, to: 'vc_redist.x64.exe' })
+    expect(() => createElectronBuilderConfig({ ...base, DSH_DESKTOP_VC_REDIST: join(directory, 'absent.exe') }, 'win32', 'x64'))
+      .toThrow('DSH_DESKTOP_VC_REDIST must name an existing redistributable')
+    expect(() => createElectronBuilderConfig({
+      ...base, DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'arm64', DSH_DESKTOP_UNSIGNED: '0',
+      DSH_DESKTOP_VC_REDIST: redistributable,
+    }, 'linux', 'arm64')).toThrow('DSH_DESKTOP_VC_REDIST requires a Windows target')
+  })
+
+  it('ships the interface locales and applies the selected compression level', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const env = {
+      DSH_DESKTOP_APP_ID: 'com.example.installer',
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
+      DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+      DSH_DESKTOP_TARGET_ARCH: 'x64',
+      DSH_DESKTOP_UNSIGNED: '1',
+    }
+    const config = createElectronBuilderConfig({ ...env }, 'win32', 'x64')
+    expect(config.win.electronLanguages).toEqual(['en-US', 'zh-CN'])
+    expect(config.compression).toBeUndefined()
+    expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_COMPRESSION: 'store' }, 'win32', 'x64').compression).toBe('store')
+    expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_COMPRESSION: 'fast' }, 'win32', 'x64'))
+      .toThrow('DSH_DESKTOP_COMPRESSION must be store or normal')
+    // maximum was measured as a no-op on the NSIS artifact (282.3 vs 282.4 MB), so it is rejected
+    // instead of accepted as a slow no-op.
+    expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_COMPRESSION: 'maximum' }, 'win32', 'x64'))
+      .toThrow('DSH_DESKTOP_COMPRESSION must be store or normal')
   })
 
   it('names unsigned Windows artifacts so they cannot pass for release builds', async () => {

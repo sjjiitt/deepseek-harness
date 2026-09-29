@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { cp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -32,6 +32,31 @@ export async function downloadPrimaryRuntimeAsset(url: string, sha256: string, c
   if (createHash('sha256').update(bytes).digest('hex') !== sha256) throw new Error(`primary runtime download: checksum mismatch for ${url}`)
   writeFileSync(destination, bytes)
   return destination
+}
+
+/**
+ * Python payload paths that no product surface loads: the Tk GUI toolkit with its bundled Tcl
+ * runtime, the IDLE editor, the ensurepip seed, the legacy converter and the standard-library test
+ * suite. Office conversion, the workspace tools and the distribution smoke check use the standard
+ * library, pip and the locked distributions only. Distribution C headers stay: a source build of a
+ * Python package needs them.
+ */
+const PRUNED_PYTHON_PATHS = [
+  'Lib/idlelib', 'Lib/ensurepip', 'Lib/lib2to3', 'Lib/test', 'Lib/tkinter', 'Lib/turtledemo',
+  'tcl', 'DLLs/_tkinter.pyd', 'DLLs/tcl86t.dll', 'DLLs/tk86t.dll',
+]
+
+/**
+ * Remove payload paths the product never loads, together with the bytecode caches Python rebuilds.
+ * @param pythonRoot - Absolute path of the extracted Python distribution.
+ */
+export function prunePythonPayload(pythonRoot: string): void {
+  for (const relative of PRUNED_PYTHON_PATHS) rmSync(join(pythonRoot, relative), { recursive: true, force: true })
+  for (const entry of readdirSync(pythonRoot, { recursive: true, withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name === '__pycache__') {
+      rmSync(join(entry.parentPath, entry.name), { recursive: true, force: true })
+    }
+  }
 }
 
 async function pythonArchive(target: keyof typeof lock.targets, cache: string): Promise<string> {
@@ -142,6 +167,7 @@ export async function preparePrimaryRuntime(options: PreparePrimaryRuntimeOption
       await cp(dirname(pnpmManifest), join(dependencies, 'pnpm'), { recursive: true, dereference: true })
     }
     await extractTar({ file: await pythonArchive(target, paths.downloads), cwd: dependencies })
+    prunePythonPayload(join(dependencies, 'python'))
     const manifest: PrimaryRuntimeManifest = {
       desktopVersion: options.version,
       platform: target === 'win-x64' ? 'win32' : target.startsWith('linux-') ? 'linux' : 'darwin',

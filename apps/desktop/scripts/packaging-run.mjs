@@ -175,6 +175,10 @@ export function createPackagingRun(root, metadata, settings = {}) {
       const stages = events.filter(event => event.type === 'stage-end')
       const proxy = events.filter(event => event.type === 'notarization-proxy').at(-1)?.status ?? 'not-used'
       writeFileSync(join(directory, 'result.json'), `${JSON.stringify({ completedAt: new Date().toISOString(), elapsedMs: performance.now() - started, success: success && !failed && !existsSync(fatal), proxy, artifacts: events.filter(event => event.type === 'artifacts').at(-1)?.directory, stages })}\n`, { flag: 'wx', mode: 0o600, flush: true })
+      // The run directory stays on the build host, so the terminal records where the time went.
+      for (const stage of [...stages].sort((left, right) => right.elapsedMs - left.elapsedMs)) {
+        console.log(`desktop package: ${Math.round(stage.elapsedMs / 1000)}s ${stage.stage}${stage.success ? '' : ' failed'}`)
+      }
     },
   }
 }

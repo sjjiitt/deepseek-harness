@@ -3,6 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
 import { readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -59,6 +60,7 @@ import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
+import { applySoftwareRendering } from './software-rendering.ts'
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
@@ -81,6 +83,8 @@ const rendererConsole = new RendererConsoleTail()
 // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
 // set before ready so the first fatal report already resolves under it.
 app.setAppLogsPath()
+// Rendering strategy precedes ready: Chromium starts its GPU process during initialization.
+applySoftwareRendering(app, process.env)
 
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
@@ -203,13 +207,28 @@ function platformLoginUrl(authorizeUrl: string): string {
   return url.href
 }
 
+/**
+ * Resolve the square brand icon the Linux window manager shows for a window. The repository carries
+ * upstream's artwork only; a deployment supplies this file as a packaging extra resource, and a build
+ * without that branding leaves the icon to the desktop entry.
+ * @returns Absolute path to an existing window icon, or undefined when the package carries none.
+ */
+function windowIconPath(): string | undefined {
+  const path = app.isPackaged
+    ? join(process.resourcesPath, 'brand-favicon-64.png')
+    : join(app.getAppPath(), 'resources', 'brand-favicon-64.png')
+  return existsSync(path) ? path : undefined
+}
+
 function createWindow(preload: string, show = false, primary = false): BrowserWindow {
+  const windowIcon = process.platform === 'linux' ? windowIconPath() : undefined
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 520,
     minHeight: 600,
     show,
+    ...(windowIcon === undefined ? {} : { icon: windowIcon }),
     ...(process.platform === 'win32' && primary ? {
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: chromeFallbackFill(),

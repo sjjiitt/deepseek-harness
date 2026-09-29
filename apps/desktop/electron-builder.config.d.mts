@@ -23,7 +23,9 @@ export interface DesktopElectronBuilderConfig {
     { readonly from: string, readonly to: 'icon.png' },
     ...{ readonly from: string, readonly to: 'tray.ico' }[],
   ]
+  readonly compression?: 'store' | 'normal' | 'maximum'
   readonly mac: {
+    readonly electronLanguages: readonly ['en-US', 'zh-CN']
     readonly extendInfo: { readonly NSMicrophoneUsageDescription: string }
     readonly entitlements: string
     readonly entitlementsInherit: string
@@ -38,11 +40,19 @@ export interface DesktopElectronBuilderConfig {
   }
   readonly win: {
     readonly forceCodeSigning: boolean
+    readonly electronLanguages: readonly ['en-US', 'zh-CN']
     readonly signtoolOptions: {
       readonly publisherName: string | undefined
       readonly sign: ((configuration: { path: string, hash: string, isNest: boolean }) => Promise<void>) | undefined
       readonly signingHashAlgorithms: readonly string[]
     }
+  }
+  readonly linux: {
+    readonly icon: string
+    readonly category: string
+    readonly electronLanguages: readonly ['en-US', 'zh-CN']
+    readonly executableName: string
+    readonly target: readonly string[]
   }
   readonly nsis: {
     readonly include: string

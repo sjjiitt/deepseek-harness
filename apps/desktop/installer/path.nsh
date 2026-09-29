@@ -1,3 +1,5 @@
+!include "WinVer.nsh"
+
 Var InstallerPath
 Var InstallerError
 ; Reject reparse points along the selected path before any write or cleanup.
@@ -118,6 +120,10 @@ FunctionEnd
 
 ; A new installation requires an empty directory; updates require the registered executable.
 Function InstallerPreflight
+    ${IfNot} ${AtLeastWin10}
+        StrCpy $InstallerError "$(INSTALLER_WINDOWS_VERSION)"
+        Return
+    ${EndIf}
     Call InstallerValidatePath
     ${If} $InstallerError != ""
         Return

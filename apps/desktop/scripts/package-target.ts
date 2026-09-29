@@ -9,6 +9,7 @@ import {
   resolveDesktopAutoUpdateConfig,
 } from './desktop-auto-update-environment.mjs'
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
+import { materializeBrandInjection, resolveBrandInjection } from './brand-assets.mjs'
 import { packageMacOSArtifacts, type DesktopPrepackagedArtifact } from './package-macos.ts'
 import { loadDesktopPackageEnvironment, validateDesktopPackageEnvironment } from './desktop-package-environment.mjs'
 import { createPackagingRun, recordPackagingEvent } from './packaging-run.mjs'
@@ -357,8 +358,14 @@ async function main(): Promise<void> {
   console.log(`DESKTOP_PACKAGING_RECORD ${run.directory}`)
   const previousDirectory = process.env.DSH_DESKTOP_PACKAGING_RUN_DIR
   process.env.DSH_DESKTOP_PACKAGING_RUN_DIR = run.directory
+  let restoreBrand: (() => void) | undefined
   let success = false
   try {
+    // Brand assets replace repository sources for the run (icons feed the
+    // platform icon settings and extraResources before the builder reads them);
+    // the finally below restores the upstream artwork on every exit path.
+    const brand = await resolveBrandInjection(environment)
+    restoreBrand = brand === undefined ? undefined : materializeBrandInjection(brand, APP_ROOT)
     await packagingStep(run.directory, 'configuration', async () => { validateDesktopPackageEnvironment(environment, target, invocation) }, secrets)
     await packagingStep(run.directory, 'toolchain', () => requireDesktopToolchain(target.platform, environment), secrets)
     if (target.platform === 'darwin') {
@@ -377,6 +384,7 @@ async function main(): Promise<void> {
     process.stderr.write(`desktop package: failed; see ${run.directory}/events.jsonl\n`)
     process.exitCode = 1
   } finally {
+    restoreBrand?.()
     if (previousDirectory === undefined) delete process.env.DSH_DESKTOP_PACKAGING_RUN_DIR
     else process.env.DSH_DESKTOP_PACKAGING_RUN_DIR = previousDirectory
     run.finish(success)
@@ -473,6 +481,11 @@ export async function packageTarget(
   await execute(['run', 'prepare:dsh', ...(signPrimaryRuntime ? ['--defer-runtime-smoke'] : [])], downloadEnv)
   if (signPrimaryRuntime) await execute(['run', 'sign:primary-runtime', '--dsh'], electronBuilderEnv)
   if (invocation.prepareOnly) return
+  // The package's TypeScript project is already built by build:official, so only its bundler runs:
+  // the root workspace build leaves workspace imports external, which the packaged application
+  // cannot resolve, while the package's own bundling inlines them and leaves only production
+  // dependencies that electron-builder ships.
+  await execute(['exec', 'tsdown'], buildEnv)
   if (target.platform === 'darwin' && !invocation.directory) {
     await execute([
       ...desktopElectronBuilderArguments(target, true),

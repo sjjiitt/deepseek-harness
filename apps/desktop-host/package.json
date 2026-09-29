@@ -8,7 +8,8 @@
   "main": "lib/index.js",
   "files": [
     "lib/index.js",
-    "lib/cli.js"
+    "lib/cli.js",
+    "desktop-defaults.patch.yml"
   ],
   "dependencies": {
     "koffi": "^3.1.0",

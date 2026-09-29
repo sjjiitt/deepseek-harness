@@ -111,6 +111,7 @@ export class RemoteStreamMuxServer {
         if (missed >= MAX_MISSED_HEARTBEATS) {
           setImmediate(() => {
             if ((this.missedHeartbeats.get(socket) as number) >= MAX_MISSED_HEARTBEATS) {
+              console.warn(`[gateway] terminating a Remote stream socket after ${String(MAX_MISSED_HEARTBEATS)} missed heartbeats`)
               socket.terminate()
             }
           })
