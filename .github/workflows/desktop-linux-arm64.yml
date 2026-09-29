@@ -132,6 +132,11 @@ jobs:
           [ "$failed" -eq 0 ] || exit 1
           echo "Every bundled ELF file references GLIBC_$limit or older"
 
+      - name: Report the archive sizes
+        run: |
+          set -euo pipefail
+          du -h apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.tar.gz
+
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-linux-arm64-portable

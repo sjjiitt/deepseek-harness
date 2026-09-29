@@ -155,6 +155,91 @@ echo "Double-click the installed launcher to start DeepSeek Harness without a te
 `
 
 /**
+ * Installer shipped inside the application update archive.
+ *
+ * The archive carries `resources/app` and `resources/runtime/cli` only, so the replacement keeps
+ * every runtime directory the target host already deployed and stores the previous application
+ * beside it for a rollback.
+ * @returns The shell script installed as `install-app-update.sh`.
+ */
+export function appUpdateInstaller(): string {
+  return `#!/bin/sh
+# Replace the application code of an installed DeepSeek Harness bundle.
+#
+# This archive carries resources/app and resources/runtime/cli only: Electron, the bundled Python
+# distribution and the pnpm CLI stay exactly as deployed.
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: $0 <bundle-directory>" >&2
+  echo "       <bundle-directory> holds run-deepseek-harness.sh" >&2
+  exit 2
+fi
+
+bundle=$1
+if [ ! -d "$bundle/resources/app" ]; then
+  echo "install-app-update: $bundle/resources/app is missing; is that a DeepSeek Harness bundle?" >&2
+  exit 2
+fi
+if [ ! -d "$here/resources/app" ]; then
+  echo "install-app-update: unpack this archive before running this script" >&2
+  exit 2
+fi
+
+stamp=$(date +%Y%m%d%H%M%S)
+backup="$bundle/resources/app.backup.$stamp"
+echo "install-app-update: keeping the current application at $backup"
+mv "$bundle/resources/app" "$backup"
+cp -a "$here/resources/app" "$bundle/resources/app"
+if [ -d "$here/resources/runtime/cli" ]; then
+  if [ -d "$bundle/resources/runtime/cli" ]; then
+    mv "$bundle/resources/runtime/cli" "$bundle/resources/runtime/cli.backup.$stamp"
+  fi
+  mkdir -p "$bundle/resources/runtime"
+  cp -a "$here/resources/runtime/cli" "$bundle/resources/runtime/cli"
+fi
+
+if [ -f "$bundle/resources/runtime/cli/bin/dsh" ]; then
+  # Keep the CLI entry executable even where the copy could not carry the mode over.
+  chmod 0755 "$bundle/resources/runtime/cli/bin/dsh"
+fi
+
+echo "install-app-update: application replaced; start the bundle again to use it"
+echo "install-app-update: to roll back, remove resources/app and rename $backup back"
+`
+}
+
+/**
+ * Compose the README shipped inside the application update archive.
+ * @param version - Product version the update carries.
+ * @returns Markdown README written beside the installer.
+ */
+function appUpdateReadme(version: string): string {
+  return `# DeepSeek Harness Desktop ${version} — application update (Linux arm64)
+
+This archive replaces the application code of a bundle that is already deployed.
+It carries \`resources/app\` (the shell and the dsh runtime tree) and
+\`resources/runtime/cli\`; Electron, the bundled Python distribution and the pnpm
+CLI are not included, because the target machine already has them.
+
+Unpack it and point the installer at the bundle directory:
+
+\`\`\`sh
+tar -xzf deepseek-harness-${version}-linux-arm64-app.tar.gz
+cd deepseek-harness-${version}-linux-arm64-app
+./install-app-update.sh /path/to/deepseek-harness-${version}-linux-arm64
+\`\`\`
+
+The installer moves the replaced directories aside as
+\`app.backup.<timestamp>\`, so a rollback removes \`resources/app\` and renames that
+backup back. Use this archive for a bundle of the same product line: the native
+addons inside \`app\` are built against the Electron version that bundle ships.
+`
+}
+
+/**
  * Compose the bundle README for one version.
  * @param version - Product version the bundle carries.
  * @returns Markdown README written into the bundle root.
@@ -288,6 +373,25 @@ async function main(): Promise<void> {
     writeFileSync(`${tarball}.sha256`, `${digest ?? ''}  ${basename(tarball)}\n`)
     process.stdout.write(`desktop portable: ${tarball}\n`)
     process.stdout.write(`desktop portable: ${tarball}.sha256\n`)
+
+    // The target host already deployed the runtime directories, so an update ships the application
+    // tree alone: `resources/app` plus the CLI scripts, which are application code as well. The
+    // payload is hard-linked into the staging directory, so staging costs no extra space.
+    const updateName = `${bundleName}-app`
+    const updateRoot = join(portableRoot, updateName)
+    rmSync(updateRoot, { recursive: true, force: true })
+    mkdirSync(join(updateRoot, 'resources', 'runtime'), { recursive: true })
+    writeFileSync(join(updateRoot, 'install-app-update.sh'), appUpdateInstaller(), { mode: 0o755 })
+    writeFileSync(join(updateRoot, 'README.md'), appUpdateReadme(version))
+    execFileSync('cp', ['-al', join(bundleRoot, 'resources', 'app'), join(updateRoot, 'resources', 'app')], { stdio: 'inherit' })
+    execFileSync('cp', ['-al', join(bundleRoot, 'resources', 'runtime', 'cli'), join(updateRoot, 'resources', 'runtime', 'cli')], { stdio: 'inherit' })
+    const updateTarball = join(portableRoot, `${updateName}.tar.gz`)
+    execFileSync('tar', ['-czf', updateTarball, '-C', portableRoot, updateName], { stdio: 'inherit' })
+    rmSync(updateRoot, { recursive: true, force: true })
+    const updateDigest = execFileSync('sha256sum', [updateTarball], { encoding: 'utf8' }).split(/\s+/u)[0]
+    writeFileSync(`${updateTarball}.sha256`, `${updateDigest ?? ''}  ${basename(updateTarball)}\n`)
+    process.stdout.write(`desktop portable: ${updateTarball}\n`)
+    process.stdout.write(`desktop portable: ${updateTarball}.sha256\n`)
   } finally {
     restoreBrand?.()
   }
