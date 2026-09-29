@@ -137,12 +137,33 @@ jobs:
           set -euo pipefail
           du -h apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.tar.gz
 
+      # Each archive is its own artifact so a download takes only what the host needs: the full
+      # bundle is ~357 MB and the application update ~102 MB.
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-linux-arm64-portable
-          path: |
-            apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.tar.gz
-            apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/*.sha256
+          path: apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/deepseek-harness-*-linux-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-linux-arm64-portable-sha256
+          path: apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/deepseek-harness-*-linux-arm64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-linux-arm64-app-update
+          path: apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/deepseek-harness-*-linux-arm64-app.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-linux-arm64-app-update-sha256
+          path: apps/desktop/.desktop-build/targets/linux-arm64/artifacts/portable/deepseek-harness-*-linux-arm64-app.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
 
