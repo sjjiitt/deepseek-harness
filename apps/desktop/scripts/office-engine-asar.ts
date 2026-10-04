@@ -14,11 +14,35 @@ const READ_ENGINE_DECLARATION = 'async function readEngine(packageFile, backend,
 /** Conversion entry declaration the diagnostic helper is inserted before. */
 const RUN_NATIVE_DECLARATION = 'async function runNative(engine, options, input, output, profile, fonts, substitutions, signal, operation = {'
 
-/** Helper call options as the published kit passes them, without a working directory. */
-const SPAWN_OPTIONS = '\t], {\n\t\tstdio: [\n\t\t\t"ignore",\n\t\t\t"pipe",\n\t\t\t"pipe"\n\t\t],\n\t\twindowsHide: true,\n\t\tenv\n\t});'
+/** Helper spawn declaration the engine's own program directory is threaded through. */
+const SPAWN_NATIVE_DECLARATION = 'function spawnNative(executable, args, env) {'
 
-/** Helper call options pinned to the engine's own program directory. */
-const SPAWN_OPTIONS_WITH_CWD = '\t], {\n\t\tstdio: [\n\t\t\t"ignore",\n\t\t\t"pipe",\n\t\t\t"pipe"\n\t\t],\n\t\twindowsHide: true,\n\t\tcwd: engine.programDirectory,\n\t\tenv\n\t});'
+/** Helper spawn declaration that accepts the engine's own program directory. */
+const SPAWN_NATIVE_DECLARATION_WITH_CWD = 'function spawnNative(executable, args, env, cwd) {'
+
+/** POSIX helper spawn options as the published kit passes them, without a working directory. */
+const POSIX_SPAWN_OPTIONS = '\t\tstdio: "pipe",\n\t\twindowsHide: true,\n\t\tenv\n\t});'
+
+/** POSIX helper spawn options pinned to the engine's own program directory. */
+const POSIX_SPAWN_OPTIONS_WITH_CWD = '\t\tstdio: "pipe",\n\t\twindowsHide: true,\n\t\tcwd,\n\t\tenv\n\t});'
+
+/** Windows helper spawn options as the published kit passes them, without a working directory. */
+const WINDOWS_SPAWN_OPTIONS = '\t\t\tstdio: [\n\t\t\t\tinput.read,\n\t\t\t\toutput.write,\n\t\t\t\terror.write\n\t\t\t],\n\t\t\twindowsHide: true,\n\t\t\tenv\n\t\t});'
+
+/** Windows helper spawn options pinned to the engine's own program directory. */
+const WINDOWS_SPAWN_OPTIONS_WITH_CWD = '\t\t\tstdio: [\n\t\t\t\tinput.read,\n\t\t\t\toutput.write,\n\t\t\t\terror.write\n\t\t\t],\n\t\t\twindowsHide: true,\n\t\t\tcwd,\n\t\t\tenv\n\t\t});'
+
+/** Conversion helper call as the published kit passes it, without a working directory. */
+const CONVERSION_SPAWN_CALL = '\t\t], env);'
+
+/** Conversion helper call that passes the engine's own program directory. */
+const CONVERSION_SPAWN_CALL_WITH_CWD = '\t\t], env, engine.programDirectory);'
+
+/** Rendering helper call as the published kit passes it, without a working directory. */
+const RENDERING_SPAWN_CALL = '\t\t], nativeEnvironment(profile, engine.programDirectory));'
+
+/** Rendering helper call that passes the engine's own program directory. */
+const RENDERING_SPAWN_CALL_WITH_CWD = '\t\t], nativeEnvironment(profile, engine.programDirectory), engine.programDirectory);'
 
 /** Failure message value that drops the helper's own diagnostics. */
 const MESSAGE_VALUE = '${result.error ?? stderr}'
@@ -56,7 +80,11 @@ const REPLACEMENTS: readonly Replacement[] = [
   { from: READ_ENGINE_DECLARATION, to: `${PHYSICAL_ROOT_HELPER}${READ_ENGINE_DECLARATION}` },
   { from: UNPATCHED_ROOT_LINE, to: PATCHED_ROOT_LINE },
   { from: RUN_NATIVE_DECLARATION, to: `${NATIVE_DIAGNOSTIC_HELPER}${RUN_NATIVE_DECLARATION}` },
-  { from: SPAWN_OPTIONS, to: SPAWN_OPTIONS_WITH_CWD },
+  { from: SPAWN_NATIVE_DECLARATION, to: SPAWN_NATIVE_DECLARATION_WITH_CWD },
+  { from: POSIX_SPAWN_OPTIONS, to: POSIX_SPAWN_OPTIONS_WITH_CWD },
+  { from: WINDOWS_SPAWN_OPTIONS, to: WINDOWS_SPAWN_OPTIONS_WITH_CWD },
+  { from: CONVERSION_SPAWN_CALL, to: CONVERSION_SPAWN_CALL_WITH_CWD },
+  { from: RENDERING_SPAWN_CALL, to: RENDERING_SPAWN_CALL_WITH_CWD },
   { from: MESSAGE_VALUE, to: MESSAGE_VALUE_WITH_DIAGNOSTIC },
 ]
 
