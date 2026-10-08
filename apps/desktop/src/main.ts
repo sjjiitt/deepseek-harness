@@ -993,10 +993,13 @@ async function main(): Promise<void> {
     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
   ]
   const refreshApplicationMenu = (): void => {
-    Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'win32' ? devToolsItems : [{
-      label: darwin ? app.name : currentDesktopLocale().messages.application,
+    // Linux and Windows deliveries run as a double-click appliance: the menu bar
+    // stays empty and only the hidden devtools accelerators (F12) register,
+    // while macOS keeps its standard menus.
+    Menu.setApplicationMenu(Menu.buildFromTemplate(darwin ? [{
+      label: app.name,
       submenu: [...applicationItems(), ...devToolsItems],
-    }, ...platformMenus()]))
+    }, ...platformMenus()] : devToolsItems))
     tray?.relabel()
   }
   refreshApplicationMenu()
