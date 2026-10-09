@@ -2,7 +2,7 @@
 
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { runCli } from '@deepseek-ai/dsh/lib/bin.js'
-import { installOfficeEngineResolution, runtimeArchivePath } from './office-engine.ts'
+import { installOfficeEngineResolution } from './office-engine.ts'
 
 /**
  * Run the ordinary CLI with Desktop's bundled package manager and reserved-profile plugin access.
@@ -32,5 +32,8 @@ if (import.meta.main) {
     await installWindowsCliSignals()
   }
   const runtimeDir = resolve(import.meta.dirname, '../../../..')
-  await runDesktopCli(runtimeDir, join(dirname(runtimeArchivePath(runtimeDir) ?? runtimeDir), 'runtime'))
+  // The prepared runtime sits beside the application tree: `resources/runtime` next to
+  // `resources/app.asar` in a packaged application, and next to `resources/app` in the Linux
+  // portable bundle, whose dsh tree stays a plain directory.
+  await runDesktopCli(runtimeDir, join(dirname(dirname(runtimeDir)), 'runtime'))
 }
