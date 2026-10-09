@@ -63,7 +63,6 @@ export function createElectronBuilderConfig(
     throw new Error('desktop package: DSH_DESKTOP_UNSIGNED must be 0 or 1')
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
-  if (unsigned && resolvedPlatform !== 'win32') throw new Error('desktop package: unsigned builds require Windows')
   if (env.DSH_DESKTOP_PORTABLE !== undefined && !['0', '1'].includes(env.DSH_DESKTOP_PORTABLE)) {
     throw new Error('desktop package: DSH_DESKTOP_PORTABLE must be 0 or 1')
   }
@@ -71,15 +70,15 @@ export function createElectronBuilderConfig(
   // needs neither the updater origin nor the policy service and its packaged application never queries either.
   const portable = env.DSH_DESKTOP_PORTABLE === '1'
   if (portable && resolvedPlatform !== 'linux') throw new Error('desktop package: portable builds require Linux')
-  const policy = portable ? undefined : resolveDesktopPolicyEnvironment(env)
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
+  const policy = portable || (packagesMacOS && unsigned) ? undefined : resolveDesktopPolicyEnvironment(env)
   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
   // Windows cannot supply the Visual C++ runtime that Office preview and the native modules load, so a
   // packaging environment may name Microsoft's official redistributable for the installer to offer.
   const vcRedist = resolveWindowsVcRedist(env, packagesWindows)
-  const macOSSigning = packagesMacOS ? resolveMacOSSigningEnvironment(env) : undefined
-  if (packagesMacOS) resolveMacOSNotarizationEnvironment(env)
+  const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
+  if (packagesMacOS && !unsigned) resolveMacOSNotarizationEnvironment(env)
   const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
   let primaryRuntimeDestination
   let dshDestination
@@ -118,7 +117,7 @@ export function createElectronBuilderConfig(
     protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
-      ...policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy },
+      ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
     },
@@ -181,19 +180,20 @@ export function createElectronBuilderConfig(
       electronLanguages: DESKTOP_ELECTRON_LANGUAGES,
       // macOS matches the application locale against this bundle, not Electron Framework resources.
       extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
-      identity: macOSSigning?.signingIdentity,
-      forceCodeSigning: true,
+      // Ad-hoc signing keeps the modified Electron executable runnable without a Developer ID.
+      identity: unsigned ? '-' : macOSSigning?.signingIdentity,
+      forceCodeSigning: !unsigned,
       hardenedRuntime: true,
       extendInfo: { NSMicrophoneUsageDescription: 'DeepSeek Harness uses your microphone to transcribe speech into message drafts.' },
       entitlements: fileURLToPath(new URL('./macos-entitlements.plist', import.meta.url)),
       entitlementsInherit: fileURLToPath(new URL('./macos-entitlements.plist', import.meta.url)),
-      // ASAR-unpacked native runtime files are pre-signed; PAK resources are sealed by their enclosing bundle.
+      // Prepared runtime files retain their signatures; PAK resources are sealed by their enclosing bundle.
       signIgnore: ['/Contents/Resources/app\\.asar\\.unpacked/dsh(?:/|$)', '/Contents/Resources/runtime/primary-runtime(?:/|$)', '\\.pak$'],
-      notarize: true,
-      target: ['dmg', 'zip'],
+      notarize: !unsigned,
+      target: unsigned ? ['dmg'] : ['dmg', 'zip'],
     },
     dmg: {
-      sign: true,
+      sign: !unsigned,
       writeUpdateInfo: false,
     },
     beforePack: async context => {
@@ -233,7 +233,7 @@ export function createElectronBuilderConfig(
         })
         await verifyWindowsAsarUnpack(buildPaths.dsh, context.packager.getResourcesDir(context.appOutDir), windowsCode)
       }
-      if (context.electronPlatformName !== 'darwin') return
+      if (context.electronPlatformName !== 'darwin' || unsigned) return
       const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
       if (update !== undefined) {
         await verifyMacOSAppUpdateConfig(appPath, resolveMacOSAppUpdateFeed(context.packager.config.publish),
@@ -242,7 +242,7 @@ export function createElectronBuilderConfig(
       verifyMacOSSignatureAfterSign(context, macOSSigning ?? resolveMacOSSigningEnvironment(env))
     },
     artifactBuildCompleted: artifact => {
-      if (!artifact.file.endsWith('.dmg')) return
+      if (unsigned || !artifact.file.endsWith('.dmg')) return
       return notarizeMacOSDiskImageArtifact(
         artifact,
         env,
