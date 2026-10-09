@@ -166,6 +166,8 @@ export function createElectronBuilderConfig(
       { from: fileURLToPath(new URL(portable ? '../resources/icon.png' : '../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+      // Linux tray PNG (main.ts linuxTrayIconPath reads tray-linux.png through StatusNotifier).
+      ...(resolvedPlatform === 'linux' ? [{ from: fileURLToPath(new URL('../resources/tray-linux.png', import.meta.url)), to: 'tray-linux.png' }] : []),
       // Brand window-icon channel (main.ts windowIconPath reads brand-favicon-64.png):
       // the repository ships no brand files, so these entries only exist when
       // brand injection materialized them before the build.

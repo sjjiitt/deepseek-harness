@@ -1019,10 +1019,16 @@ async function main(): Promise<void> {
   }
   refreshApplicationMenu()
   const trayIconPath = development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
-  if (process.platform === 'win32') {
+  // Linux delivers the same tray (click reopens a hidden window; the menu carries the
+  // explicit quit entry) with a PNG icon — the ICO bitmaps do not load through
+  // StatusNotifier applets such as UKUI's.
+  const linuxTrayIconPath = development
+    ? join(app.getAppPath(), 'resources', 'tray-linux.png')
+    : join(process.resourcesPath, 'tray-linux.png')
+  if (process.platform === 'win32' || process.platform === 'linux') {
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
     try {
-      tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
+      tray = new DesktopTray({ iconPath: process.platform === 'win32' ? trayIconPath : linuxTrayIconPath, locale: currentDesktopLocale,
         open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
@@ -1288,10 +1294,23 @@ async function main(): Promise<void> {
     updateSchedule.dispose()
     updateDialog.dispose()
     mandatoryUI?.dispose()
-    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(),
+    const cleanup = Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(),
       // A Platform cleanup failure is logged without cutting the remaining Host shutdown short.
       platformView.dispose().catch((error: unknown) => { console.error(error) })])
-      .catch((error: unknown) => { console.error(error) }).finally(() => { app.quit() })
+    // Linux appliance deliveries must not strand the process on a stuck cleanup
+    // step: the profile lock and runtime ports only free once the app is gone.
+    const boundedCleanup = process.platform === 'linux'
+      ? Promise.race([cleanup, new Promise<void>(resolve => { setTimeout(resolve, 10_000) })])
+      : cleanup
+    void boundedCleanup
+      .catch((error: unknown) => { console.error(error) }).finally(() => {
+        app.quit()
+        if (process.platform === 'linux') {
+          // A stuck Host child would otherwise outlive Electron holding the
+          // ports and the profile lock; take the process group down with us.
+          setTimeout(() => { try { process.kill(0, 'SIGKILL') } catch { /* group already gone */ } }, 1_500)
+        }
+      })
   }
   app.on('before-quit', (event) => {
     if (shellInstallerOwnsQuit) {
@@ -1309,7 +1328,13 @@ async function main(): Promise<void> {
     if (quitting) return
     event.preventDefault()
     if (skipQuitConfirmation || sessionEnding) { finishQuit(); return }
-    void quitConfirmation.confirm().then((approved) => {
+    // Linux appliance deliveries may have no visible confirmation surface once the
+    // window is closed, and an unresponsive Host inspection would strand the
+    // process holding the runtime and profile lock: bound the wait and quit.
+    const confirmQuit: Promise<boolean> = process.platform === 'linux'
+      ? Promise.race([quitConfirmation.confirm(), new Promise<boolean>(resolve => { setTimeout(() => resolve(true), 15_000) })])
+      : quitConfirmation.confirm()
+    void confirmQuit.then((approved) => {
       if (quitting || shellInstallerOwnsQuit) return
       if (approved) { finishQuit(); return }
       // A quit that started from closing the welcome window destroyed it; a cancelled quit needs it back.
