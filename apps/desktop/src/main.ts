@@ -259,6 +259,16 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  if (process.platform === 'linux') {
+    // The Linux application menu is removed entirely, so its accelerators are
+    // gone with it; keep devtools reachable through F12 on every window.
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.key === 'F12') {
+        event.preventDefault()
+        window.webContents.toggleDevTools()
+      }
+    })
+  }
   if (process.platform === 'darwin' || process.platform === 'win32') {
     // Fullscreen hides native window controls; overlays drop their caption clearance.
     const sendFullscreen = (): void => {
@@ -993,9 +1003,14 @@ async function main(): Promise<void> {
     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
   ]
   const refreshApplicationMenu = (): void => {
-    // Linux and Windows deliveries run as a double-click appliance: the menu bar
-    // stays empty and only the hidden devtools accelerators (F12) register,
-    // while macOS keeps its standard menus.
+    // Linux deliveries run as a double-click appliance with no menu bar at all:
+    // top-level visible:false items still render empty slots on Linux, so the
+    // whole application menu is removed and devtools stay one F12 press away
+    // (registered in createWindow). macOS keeps its standard menus.
+    if (process.platform === 'linux') {
+      Menu.setApplicationMenu(null)
+      return
+    }
     Menu.setApplicationMenu(Menu.buildFromTemplate(darwin ? [{
       label: app.name,
       submenu: [...applicationItems(), ...devToolsItems],
