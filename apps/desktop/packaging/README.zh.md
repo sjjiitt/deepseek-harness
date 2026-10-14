@@ -183,7 +183,7 @@ pnpm run package:desktop:win:x64:unsigned
 
 先运行 `pnpm install --frozen-lockfile`，再运行 `pnpm run package:desktop:win:x64:unsigned --check` 校验配置和工具，最后执行上面的完整命令。打包自行执行完整构建和隔离的运行时 smoke，不调用在线模型。阶段日志保留在 `.desktop-build/packaging-runs/`；仅构建成功不代表安装包验证通过。依赖安装和运行时准备需要访问 npm、GitHub release 资源和 nodejs.org；网络需要时使用现有 registry 和代理配置。缓存与工具位置属于构建机器配置，不在跟踪文件中固定个人路径。
 
-打包环境可选择三个部署选项。`DSH_DESKTOP_VC_REDIST` 指定 Microsoft Visual C++ 2015-2022 运行库的绝对路径；安装程序会嵌入它，并在 Windows 缺少该运行库时提供安装，而非 Windows 目标或指向不存在文件的路径会使打包失败。`DSH_DESKTOP_COMPRESSION` 接受 `store` 或 `normal`，覆盖 electron-builder 的压缩设置，便于测试派发以最快速度打包；`maximum` 在 NSIS 产物上实测无收益（产物仅小 0.1 MB，构建时间明显更长），因此被拒绝。`DSH_DESKTOP_PNPM_STORE_DIR` 指定已准备运行时安装时使用的绝对 pnpm store，使重复运行无需访问 registry。Windows x64 workflow 复用其缓存 store，应用派发的压缩级别，并通过 `bundle_vc_redist` 与 `portable_archive` 输入取得运行库与组装应用的便携 zip 归档，两者默认关闭。打包后的 Electron 发行版只携带 `en-US` 与 `zh-CN` 两个 Chromium locale，已准备的 Python 负载省略 Tk 工具包、IDLE、ensurepip 种子、字节码缓存与测试套件。
+打包环境可选择三个部署选项。`DSH_DESKTOP_VC_REDIST` 指定 Microsoft Visual C++ 2015-2022 运行库的绝对路径；安装程序会嵌入它，并在 Windows 缺少该运行库时提供安装，而非 Windows 目标或指向不存在文件的路径会使打包失败。`DSH_DESKTOP_COMPRESSION` 接受 `store` 或 `normal`，覆盖 electron-builder 的压缩设置，便于测试派发以最快速度打包；`maximum` 在 NSIS 产物上实测无收益（产物仅小 0.1 MB，构建时间明显更长），因此被拒绝。`DSH_DESKTOP_PNPM_STORE_DIR` 指定已准备运行时安装时使用的绝对 pnpm store，使重复运行无需访问 registry。Windows x64 workflow 复用其缓存 store，应用派发的压缩级别，并通过 `bundle_vc_redist` 与 `portable_archive` 输入取得运行库与组装应用的便携 zip 归档，两者默认关闭。打包后的 Electron 发行版只携带 `en-US` 与 `zh-CN` 两个 Chromium locale，已准备的 Python 负载省略 Tk 工具包、IDLE、字节码缓存与测试套件。
 
 <a id="local-macos-dmg-without-release-signing"></a>
 

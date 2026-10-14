@@ -49,10 +49,10 @@ it('invalidates payload identity for shared wheels, package versions and package
 it('prunes Python payload paths the product never loads', async () => {
   const root = await mkdtemp(join(tmpdir(), 'desktop-python-prune-'))
   try {
-    for (const relative of ['Lib/idlelib', 'Lib/tkinter', 'tcl/tk8.6', 'include', 'Lib/json/__pycache__', 'Lib/site-packages/pandas', 'DLLs']) {
+    for (const relative of ['Lib/idlelib', 'Lib/tkinter', 'Lib/ensurepip', 'tcl/tk8.6', 'include', 'Lib/json/__pycache__', 'Lib/site-packages/pandas', 'DLLs']) {
       await mkdir(join(root, relative), { recursive: true })
     }
-    for (const relative of ['Lib/idlelib/idle.py', 'Lib/tkinter/__init__.py', 'tcl/tk8.6/init.tcl',
+    for (const relative of ['Lib/idlelib/idle.py', 'Lib/tkinter/__init__.py', 'Lib/ensurepip/__init__.py', 'tcl/tk8.6/init.tcl',
       'include/Python.h', 'DLLs/tk86t.dll', 'DLLs/tcl86t.dll', 'DLLs/python312.dll',
       'Lib/json/__pycache__/json.cpython-312.pyc', 'Lib/json/__init__.py', 'Lib/site-packages/pandas/__init__.py']) {
       await writeFile(join(root, relative), '')
@@ -61,7 +61,7 @@ it('prunes Python payload paths the product never loads', async () => {
     for (const removed of ['Lib/idlelib', 'Lib/tkinter', 'tcl', 'Lib/json/__pycache__', 'DLLs/tk86t.dll', 'DLLs/tcl86t.dll']) {
       expect(existsSync(join(root, removed))).toBe(false)
     }
-    for (const kept of ['include/Python.h', 'DLLs/python312.dll', 'Lib/json/__init__.py', 'Lib/site-packages/pandas/__init__.py']) {
+    for (const kept of ['include/Python.h', 'DLLs/python312.dll', 'Lib/json/__init__.py', 'Lib/site-packages/pandas/__init__.py', 'Lib/ensurepip/__init__.py']) {
       expect(existsSync(join(root, kept))).toBe(true)
     }
   } finally { await rm(root, { recursive: true, force: true }) }

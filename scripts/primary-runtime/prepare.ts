@@ -53,13 +53,14 @@ export async function downloadPrimaryRuntimeAsset(url: string, sha256: string, c
 
 /**
  * Python payload paths that no product surface loads: the Tk GUI toolkit with its bundled Tcl
- * runtime, the IDLE editor, the ensurepip seed, the legacy converter and the standard-library test
- * suite. Office conversion, the workspace tools and the distribution smoke check use the standard
- * library, pip and the locked distributions only. Distribution C headers stay: a source build of a
- * Python package needs them.
+ * runtime, the IDLE editor, the legacy converter and the standard-library test suite. Office
+ * conversion, the workspace tools and the distribution smoke check use the standard library, pip
+ * and the locked distributions only. The ensurepip seed stays: the smoke check creates a virtual
+ * environment, which installs pip from it. Distribution C headers stay: a source build of a Python
+ * package needs them.
  */
 const PRUNED_PYTHON_PATHS = [
-  'Lib/idlelib', 'Lib/ensurepip', 'Lib/lib2to3', 'Lib/test', 'Lib/tkinter', 'Lib/turtledemo',
+  'Lib/idlelib', 'Lib/lib2to3', 'Lib/test', 'Lib/tkinter', 'Lib/turtledemo',
   'tcl', 'DLLs/_tkinter.pyd', 'DLLs/tcl86t.dll', 'DLLs/tk86t.dll',
 ]
 

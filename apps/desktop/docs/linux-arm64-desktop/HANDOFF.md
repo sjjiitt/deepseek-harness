@@ -85,7 +85,7 @@ pwsh -File apps/desktop/docs/linux-arm64-desktop/ci-run.ps1 -Workflow desktop-li
 | `apps/desktop/scripts/package-linux-arm64-portable.ts` | 打包器：调用 pnpm 跑准备链，rename electron-builder 产物为 bundle，写 launcher / 入口安装脚本 / README，打 tar.gz + sha256 | `DSH_DESKTOP_PORTABLE=1`（脚本内部设置）、`DSH_DESKTOP_APP_ID`、`.env.windows`/环境变量 |
 | `.github/workflows/desktop-linux-arm64.yml` | CI 通道：构建 + 上传 artifact（可选发 Release） | `workflow_dispatch` 输入 |
 | `apps/desktop/scripts/prepare-runtime.ts` | 下载/解压 Electron + 准备 primary runtime（Node/pnpm/**Python**）+ `versions.json` | `DSH_DESKTOP_PNPM_STORE_DIR` 影响下游安装；下载缓存在 `.desktop-build/downloads` |
-| `apps/desktop/scripts/prepare-primary-runtime.ts` → `scripts/primary-runtime/prepare.ts` | 物化 primary runtime；**Python 载荷裁剪**（Tk/Tcl、idlelib、ensurepip、lib2to3、test、`__pycache__`）在这里 | `scripts/primary-runtime/lock.json`（版本 pin） |
+| `apps/desktop/scripts/prepare-primary-runtime.ts` → `scripts/primary-runtime/prepare.ts` | 物化 primary runtime；**Python 载荷裁剪**（Tk/Tcl、idlelib、lib2to3、test、`__pycache__`）在这里 | `scripts/primary-runtime/lock.json`（版本 pin） |
 | `apps/desktop/scripts/prepare-package-set.ts` / `prepare-dsh.ts` | 生成包集 → 安装生产闭包 → 物化 → 清单/校验 → 冒烟 | `DSH_DESKTOP_PNPM_STORE_DIR` |
 | `apps/desktop/scripts/smoke-packaged-runtime.ts` | 冒烟：DOCX/XLSX/PPTX→PDF + skill CLI 探测 | Windows 下走 `short-application-path.ts`；Linux 用 `linux-arm64-unpacked` |
 | `apps/desktop/scripts/brand-assets.mjs` | 构建时品牌注入：读 `DSH_DESKTOP_BRAND_ARCHIVE[_BASE64]` → 白名单校验 → 覆盖源文件 → 返回还原函数（两个打包入口都挂） | 品牌资产 zip/目录（备份在 `.desktop-build/branding-backup/`） |
