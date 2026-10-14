@@ -1,8 +1,9 @@
 /** Public dsh commands using the immutable runtime carried by the Desktop installation. */
 
+import { existsSync } from 'node:fs'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { runCli } from '@deepseek-ai/dsh/lib/bin.js'
-import { installOfficeEngineResolution } from './office-engine.ts'
+import { installOfficeEngineResolution, runtimeArchivePath } from './office-engine.ts'
 
 /**
  * Run the ordinary CLI with Desktop's bundled package manager and reserved-profile plugin access.
@@ -26,14 +27,31 @@ export async function runDesktopCli(runtimeDir: string, supportDir: string): Pro
   })
 }
 
+/**
+ * Locate the prepared runtime that carries the primary-runtime payload and Node launchers.
+ * A build tree keeps the runtime beside the dsh tree under one target; a packaged application
+ * keeps it beside the application tree, one level above the dsh tree's parent.
+ * @param runtimeDir - Prepared or ASAR-contained production DSH package tree.
+ * @returns Absolute Desktop runtime directory.
+ * @throws {Error} When no candidate directory holds a primary-runtime payload.
+ */
+export function resolveDesktopRuntimeDirectory(runtimeDir: string): string {
+  const archive = runtimeArchivePath(runtimeDir)
+  const candidates = [
+    ...(archive === undefined ? [] : [join(dirname(archive), 'runtime')]),
+    join(dirname(runtimeDir), 'runtime'),
+    join(dirname(dirname(runtimeDir)), 'runtime'),
+  ]
+  const found = candidates.find(candidate => existsSync(join(candidate, 'primary-runtime')))
+  if (found === undefined) throw new Error(`desktop CLI: no runtime directory found beside ${runtimeDir}`)
+  return found
+}
+
 if (import.meta.main) {
   if (process.platform === 'win32') {
     const { installWindowsCliSignals } = await import('./windows-cli-signals.ts')
     await installWindowsCliSignals()
   }
   const runtimeDir = resolve(import.meta.dirname, '../../../..')
-  // The prepared runtime sits beside the application tree: `resources/runtime` next to
-  // `resources/app.asar` in a packaged application, and next to `resources/app` in the Linux
-  // portable bundle, whose dsh tree stays a plain directory.
-  await runDesktopCli(runtimeDir, join(dirname(dirname(runtimeDir)), 'runtime'))
+  await runDesktopCli(runtimeDir, resolveDesktopRuntimeDirectory(runtimeDir))
 }
