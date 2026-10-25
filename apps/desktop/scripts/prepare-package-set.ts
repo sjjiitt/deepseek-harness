@@ -23,9 +23,8 @@ import {
   parseDesktopCorePackageSet,
   type DesktopCorePackageRecord,
 } from '../src/core-package-set.ts'
-import { capture } from '../../../scripts/release/process.ts'
-import { tarballFiles } from '../../../scripts/release/tarball.ts'
-import { resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
+import { packedManifest, tarballFiles } from '../../../scripts/release/tarball.ts'
+import { desktopTargetPlatform, resolveDesktopBuildTarget, resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
 
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const ROOT_PACKAGES = [DSH_PACKAGE, DESKTOP_HOST_PACKAGE] as const
@@ -41,6 +40,17 @@ export interface PackedDesktopPackage {
   readonly manifest: Readonly<Record<string, unknown>>
 }
 
+function supportsTarget(manifest: Readonly<Record<string, unknown>>, field: 'os' | 'cpu', target: string): boolean {
+  const values = manifest[field]
+  if (values === undefined) return true
+  if (!Array.isArray(values) || !values.every((value): value is string => typeof value === 'string')) {
+    throw new Error(`desktop package set: ${String(manifest.name)} has invalid ${field}`)
+  }
+  if (values.includes(`!${target}`)) return false
+  return values.length === 0 || (values.length === 1 && values[0] === 'any') || values.includes(target)
+    || values.every(value => value.startsWith('!'))
+}
+
 function dependencyNames(manifest: Readonly<Record<string, unknown>>, section: string): string[] {
   const value = manifest[section]
   if (value === undefined) return []
@@ -54,10 +64,12 @@ function dependencyNames(manifest: Readonly<Record<string, unknown>>, section: s
  * Select workspace dependencies rooted at dsh and its private Host; npm resolves external packages.
  * Reads the repository workspace manifest and package manifests to distinguish required local packages from npm-resolved externals.
  * @param available - Packed packages indexed by package name.
+ * @param target - Platform and architecture of the installer payload.
  * @returns Selected packages sorted by name.
  */
 export function selectDesktopPackageClosure(
   available: ReadonlyMap<string, PackedDesktopPackage>,
+  target: ReturnType<typeof desktopTargetPlatform>,
 ): PackedDesktopPackage[] {
   const workspace = yaml.load(readFileSync(join(REPOSITORY_ROOT, 'pnpm-workspace.yaml'), 'utf8')) as { packages: string[] }
   const workspaceNames = new Set(globSync(workspace.packages.map(pattern => `${pattern}/package.json`), { cwd: REPOSITORY_ROOT })
@@ -77,7 +89,9 @@ export function selectDesktopPackageClosure(
       }
     }
     for (const dependency of dependencyNames(packed.manifest, OPTIONAL_DEPENDENCY_SECTION)) {
-      if (available.has(dependency)) visit(dependency)
+      const optional = available.get(dependency)
+      if (optional && supportsTarget(optional.manifest, 'os', target.platform)
+        && supportsTarget(optional.manifest, 'cpu', target.arch)) visit(dependency)
     }
   }
   for (const name of ROOT_PACKAGES) {
@@ -85,14 +99,6 @@ export function selectDesktopPackageClosure(
     visit(name)
   }
   return [...selected.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, packed]) => packed)
-}
-
-function packedManifest(tarball: string): Record<string, unknown> {
-  const value: unknown = JSON.parse(capture('tar', ['-xOzf', tarball, 'package/package.json']))
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`desktop package set: ${tarball} has no package manifest`)
-  }
-  return value as Record<string, unknown>
 }
 
 function packedPackages(inputs: readonly string[]): Map<string, PackedDesktopPackage> {
@@ -127,9 +133,16 @@ export function assertDesktopHostPackageFiles(files: readonly string[]): void {
   }
 }
 
-/** Prepare a package set from release tarball directories. */
-export function prepareDesktopPackageSet(inputs: readonly string[], output: string): void {
-  const selected = selectDesktopPackageClosure(packedPackages(inputs))
+/**
+ * Prepare a package set from release tarball directories.
+ * @param inputs - Release tarball directories.
+ * @param output - Destination package-set directory.
+ * @param target - Platform and architecture of the installer payload.
+ */
+export function prepareDesktopPackageSet(
+  inputs: readonly string[], output: string, target: ReturnType<typeof desktopTargetPlatform>,
+): void {
+  const selected = selectDesktopPackageClosure(packedPackages(inputs), target)
   const host = selected.find(packed => packed.manifest.name === DESKTOP_HOST_PACKAGE)
   if (host === undefined) throw new Error(`desktop package set: selected closure omits ${DESKTOP_HOST_PACKAGE}`)
   assertDesktopHostPackageFiles(tarballFiles(host.tarball))
@@ -171,7 +184,7 @@ function main(): void {
   })
   const inputs = (values.from ?? defaultInputs).map(path => resolve(REPOSITORY_ROOT, path))
   const output = values.out === undefined ? buildPaths.packageSet : resolve(REPOSITORY_ROOT, values.out)
-  prepareDesktopPackageSet(inputs, output)
+  prepareDesktopPackageSet(inputs, output, desktopTargetPlatform(resolveDesktopBuildTarget()))
   console.log(`desktop package set: prepared ${output}`)
 }
 

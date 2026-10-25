@@ -79,7 +79,9 @@ jobs:
 
       - name: Configure the pnpm store path
         shell: pwsh
-        run: '"PNPM_CONFIG_STORE_DIR=${{ runner.temp }}\pnpm-store" >> $env:GITHUB_ENV'
+        run: |
+          "DSH_DESKTOP_PACKAGE_CACHE_DIR=${{ runner.temp }}\desktop-package-cache" >> $env:GITHUB_ENV
+          "PNPM_CONFIG_STORE_DIR=${{ runner.temp }}\pnpm-store" >> $env:GITHUB_ENV
 
       # Saving on miss matters here: this lane restores the store it writes, so the packaged runtime's
       # own dependency install can resolve from it on the next run instead of fetching the closure.
@@ -91,13 +93,14 @@ jobs:
             win-x64-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
 
       # Electron, Node, Python and the locked wheels are version-keyed rather than commit-keyed, so a
-      # repeat run reuses the archives the runtime preparation would otherwise refetch.
+      # repeat run reuses the archives the runtime preparation would otherwise refetch. The packaged
+      # runtime's own dependency install reads the pnpm store under the same cache root.
       - uses: actions/cache@v4
         with:
-          path: apps/desktop/.desktop-build/downloads
-          key: win-x64-runtime-downloads-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/package.json', 'scripts/primary-runtime/lock.json') }}
+          path: ${{ runner.temp }}/desktop-package-cache
+          key: win-x64-package-cache-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/package.json', 'scripts/primary-runtime/lock.json') }}
           restore-keys: |
-            win-x64-runtime-downloads-
+            win-x64-package-cache-
 
       - name: Install (immutable)
         shell: pwsh
@@ -144,7 +147,6 @@ jobs:
       - name: Build the unsigned Windows installer
         env:
           DSH_DESKTOP_COMPRESSION: ${{ inputs.compression }}
-          DSH_DESKTOP_PNPM_STORE_DIR: ${{ runner.temp }}/pnpm-store
         run: pnpm run package:desktop:win:x64:unsigned
 
       # The NSIS installer serves machines whose users can install; the portable archive serves
