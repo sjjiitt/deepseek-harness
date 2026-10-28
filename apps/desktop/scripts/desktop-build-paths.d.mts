@@ -48,8 +48,8 @@ export function desktopTargetBuildPaths(target: DesktopBuildTarget, environment?
  * @param target - Supported Desktop target name.
  * @returns Platform and architecture of the prepared payload.
  */
-export function desktopTargetPlatform(target: DesktopBuildTarget): {
-  readonly platform: 'darwin' | 'win32' | 'linux'
+export function desktopTargetPlatform<Target extends DesktopBuildTarget>(target: Target): {
+  readonly platform: Target extends 'linux-arm64' ? 'linux' : 'darwin' | 'win32'
   readonly arch: 'arm64' | 'x64'
 }
 
