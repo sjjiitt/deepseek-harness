@@ -1,3 +1,4 @@
+import { installFileActions } from './file-actions.ts'
 import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-product-analytics/types'
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
@@ -855,6 +856,7 @@ async function main(): Promise<void> {
       || !event.senderFrame.url.startsWith('dsh-app://app/')) throw new Error('Rejected Platform command')
     return owner
   }
+  installFileActions(assertMainApplication, () => hostUrl)
   ipcMain.on(PLATFORM_IPC.bootstrap, (event) => {
     try { event.returnValue = platformView.bootstrap(event) }
     catch { event.returnValue = null }
@@ -1087,8 +1089,8 @@ async function main(): Promise<void> {
     { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+    { type: 'separator' },
     ...development ? [
-      { type: 'separator' as const },
       { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
       { label: currentDesktopLocale().messages.restartAppHostMenu, click: () => {
         if (quitting) return
@@ -1096,14 +1098,16 @@ async function main(): Promise<void> {
         quitWithoutConfirmation()
       } },
     ] : [],
+    { role: 'toggleDevTools', label: currentDesktopLocale().messages.toggleDevToolsMenu },
     { type: 'separator' },
     ...hideCommands,
     { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
       : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
   ]
-  const devToolsItems: MenuItemConstructorOptions[] = [
+  const devToolsF12Shortcut: MenuItemConstructorOptions = { role: 'toggleDevTools', visible: false, accelerator: 'F12' }
+  const windowsDevToolsShortcuts: MenuItemConstructorOptions[] = [
     { role: 'toggleDevTools', visible: false },
-    { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
+    devToolsF12Shortcut,
   ]
   const refreshApplicationMenu = (): void => {
     // Linux deliveries run as a double-click appliance with no menu bar at all:
@@ -1114,10 +1118,11 @@ async function main(): Promise<void> {
       Menu.setApplicationMenu(null)
       return
     }
-    Menu.setApplicationMenu(Menu.buildFromTemplate(darwin ? [{
-      label: app.name,
-      submenu: [...applicationItems(), ...devToolsItems],
-    }, ...platformMenus()] : devToolsItems))
+    Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'win32'
+      ? windowsDevToolsShortcuts : [{
+        label: darwin ? app.name : currentDesktopLocale().messages.application,
+        submenu: [...applicationItems(), devToolsF12Shortcut],
+      }, ...platformMenus()]))
     tray?.relabel()
   }
   refreshApplicationMenu()
@@ -1407,7 +1412,7 @@ async function main(): Promise<void> {
     // Linux appliance deliveries must not strand the process on a stuck cleanup
     // step: the profile lock and runtime ports only free once the app is gone.
     const boundedCleanup = process.platform === 'linux'
-      ? Promise.race([cleanup, new Promise<void>(resolve => { setTimeout(resolve, 10_000) })])
+      ? Promise.race([cleanup, new Promise<void>((resolve) => { setTimeout(resolve, 10_000) })])
       : cleanup
     void boundedCleanup.finally(() => {
       app.quit()
@@ -1438,7 +1443,7 @@ async function main(): Promise<void> {
     // window is closed, and an unresponsive Host inspection would strand the
     // process holding the runtime and profile lock: bound the wait and quit.
     const confirmQuit: Promise<boolean> = process.platform === 'linux'
-      ? Promise.race([quitConfirmation.confirm(), new Promise<boolean>(resolve => { setTimeout(() => resolve(true), 15_000) })])
+      ? Promise.race([quitConfirmation.confirm(), new Promise<boolean>((resolve) => { setTimeout(() => resolve(true), 15_000) })])
       : quitConfirmation.confirm()
     void confirmQuit.then((approved) => {
       if (quitting || shellInstallerOwnsQuit) return
