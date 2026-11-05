@@ -31,7 +31,10 @@
     "INSTALLER_EXTRACT_COLLAPSE": "隐藏详情",
     "INSTALLER_EXTRACT_SAVED": "完整错误报告已保存到 %s",
     "INSTALLER_EXTRACT_UNSAVED": "无法保存完整错误报告，请使用“复制错误信息”保留。",
-    "INSTALLER_EXTRACT_COPIED": "错误信息已复制到剪贴板。"
+    "INSTALLER_EXTRACT_COPIED": "错误信息已复制到剪贴板。",
+    "INSTALLER_WINDOWS_VERSION": "DeepSeek Harness 需要 64 位 Windows 10 或更高版本，当前系统无法运行。",
+    "INSTALLER_VC_RUNTIME": "Office 文件预览等系统功能需要 Microsoft Visual C++ 2015-2022 运行库，当前计算机尚未安装。是否现在安装？",
+    "INSTALLER_VC_RUNTIME_FAILED": "未能安装 Microsoft Visual C++ 2015-2022 运行库。请以管理员身份运行安装目录下 resources\\vc_redist.x64.exe，然后重新启动 DeepSeek Harness。"
   },
   "uninstaller": {
     "welcome": "欢迎",

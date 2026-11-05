@@ -31,7 +31,10 @@
     "INSTALLER_EXTRACT_COLLAPSE": "Details ausblenden",
     "INSTALLER_EXTRACT_SAVED": "Der vollständige Bericht wurde unter %s gespeichert",
     "INSTALLER_EXTRACT_UNSAVED": "Der vollständige Bericht konnte nicht gespeichert werden. Verwenden Sie „Fehlerdetails kopieren“, um sie beizubehalten.",
-    "INSTALLER_EXTRACT_COPIED": "Fehlerdetails wurden in die Zwischenablage kopiert."
+    "INSTALLER_EXTRACT_COPIED": "Fehlerdetails wurden in die Zwischenablage kopiert.",
+    "INSTALLER_WINDOWS_VERSION": "DeepSeek Harness erfordert 64-Bit-Windows 10 oder neuer. Diese Windows-Version kann es nicht ausführen.",
+    "INSTALLER_VC_RUNTIME": "Die Office-Dateivorschau und andere Systemfunktionen benötigen das Microsoft Visual C++ 2015-2022 Redistributable, das auf diesem Computer fehlt. Jetzt installieren?",
+    "INSTALLER_VC_RUNTIME_FAILED": "Das Microsoft Visual C++ 2015-2022 Redistributable wurde nicht installiert. Führen Sie resources\\vc_redist.x64.exe im Installationsordner als Administrator aus und starten Sie DeepSeek Harness neu."
   },
   "uninstaller": {
     "welcome": "Willkommen",
