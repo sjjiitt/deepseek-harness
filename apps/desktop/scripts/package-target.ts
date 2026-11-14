@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import {
   desktopBuildRecordFilename,
   resolveDesktopAutoUpdateConfig,
-} from './desktop-auto-update-environment.mjs'
+} from '@deepseek-ai/dsh-desktop-publisher/desktop-auto-update-environment.mjs'
 import { desktopArtifactOutput, desktopTargetBuildPaths } from './desktop-build-paths.mjs'
 import { materializeBrandInjection, resolveBrandInjection } from './brand-assets.mjs'
 import { packageMacOSArtifacts, type DesktopPrepackagedArtifact } from './package-macos.ts'
